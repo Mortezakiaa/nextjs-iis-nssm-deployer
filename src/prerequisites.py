@@ -145,7 +145,18 @@ def clean_host(text: str) -> str:
 def host_problem(host: str) -> str:
     if not HOST_RE.match(host):
         return "آدرس دامنه درست نیست. نمونه درست: shop.example.com"
-    taken = iis.host_taken(host)
-    if taken:
-        return f"این دامنه قبلاً به سایت «{taken}» در IIS داده شده است."
+    return ""
+
+
+def iis_port_problem(text: str, host: str, taken: set) -> str:
+    """taken: ports.taken_ports(); IIS ports in it may be shared by another site with a different domain."""
+    if not text.isdigit() or not 1 <= int(text) <= 65535:
+        return "پورت باید یک عدد بین 1 تا 65535 باشد؛ مثلاً 80"
+    port = int(text)
+    owner = iis.binding_owner(port, host)
+    if owner:
+        same = " با همین دامنه" if host else " بدون دامنه"
+        return f"پورت {port}{same} قبلاً به سایت «{owner}» در IIS داده شده است. پورت دیگری وارد کنید."
+    if port not in iis.binding_ports() and (port in taken or not ports.can_bind(port)):
+        return f"پورت {port} در اختیار برنامه دیگری روی سرور است. پورت دیگری وارد کنید."
     return ""

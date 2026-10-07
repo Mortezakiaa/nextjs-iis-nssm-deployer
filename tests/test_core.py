@@ -23,6 +23,13 @@ assert decode(bytes([0xC7, 0xE1, 0xDD])) != ""  # cp1256 bytes never crash
 # parsers
 assert iis.parse_bindings("http/*:80:A.com,https/*:443:a.com,net.tcp/808:*,http/[::1]:8001:") == [
     ("http", "*", 80, "a.com"), ("https", "*", 443, "a.com"), ("http", "[::1]", 8001, "")]
+# IIS port conflicts: same port + same domain, or the port used for non-http; different domains may share a port
+fake_sites = {"Default Web Site": {"bindings": "http/*:80:"}, "Shop": {"bindings": "http/*:80:shop.com,https/*:443:shop.com"}}
+assert iis.binding_owner(80, "", fake_sites) == "Default Web Site"
+assert iis.binding_owner(80, "Shop.com", fake_sites) == "Shop"
+assert iis.binding_owner(80, "blog.com", fake_sites) == ""
+assert iis.binding_owner(443, "blog.com", fake_sites) == "Shop"
+assert iis.binding_owner(8080, "", fake_sites) == ""
 netstat = """
   Proto  Local Address          Foreign Address        State           PID
   TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1012

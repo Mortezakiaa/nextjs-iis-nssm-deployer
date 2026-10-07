@@ -67,11 +67,12 @@ def http_binding(site: str):
     return None
 
 
-def host_taken(host: str) -> str:
-    """Name of the site already answering http://host, or ''."""
-    for name, s in sites().items():
-        for proto, _, port, h in parse_bindings(s.get("bindings")):
-            if proto == "http" and port == 80 and h == host.lower():
+def binding_owner(port: int, host: str, all_sites: dict = None) -> str:
+    """Name of the site already answering http://host:port (or using the port for https etc.), or ''.
+    Sites may share a port when their domains differ."""
+    for name, s in (sites() if all_sites is None else all_sites).items():
+        for proto, _, p, h in parse_bindings(s.get("bindings")):
+            if p == port and (proto != "http" or h == host.lower()):
                 return name
     return ""
 

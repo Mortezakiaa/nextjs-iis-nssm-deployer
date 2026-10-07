@@ -80,11 +80,13 @@ def install() -> None:
                      lambda h: prerequisites.host_problem(prerequisites.clean_host(h)), allow_empty=True)
     host = prerequisites.clean_host(host) if host else ""
 
-    with ui.busy("در حال پیدا کردن یک پورت آزاد..."):
+    with ui.busy("در حال بررسی پورت‌های سرور..."):
         taken = ports.taken_ports(apps)
-        port = ports.pick(*config.PORT_RANGE, taken)
-        iis_port = 80 if host else ports.pick(*config.IIS_PORT_RANGE, taken | {port})
-    if not port or not iis_port:
+    iis_port = int(ask_until("سایت در IIS روی کدام پورت باز شود؟ (برای سایت با دامنه معمولاً 80)",
+                             lambda p: prerequisites.iis_port_problem(p, host, taken)))
+    with ui.busy("در حال پیدا کردن یک پورت آزاد برای برنامه..."):
+        port = ports.pick(*config.PORT_RANGE, taken | {iis_port})
+    if not port:
         raise DeployError("هیچ پورت آزادی در بازه تعیین‌شده پیدا نشد. به تیم فنی اطلاع دهید.")
 
     ui.info("")
@@ -92,7 +94,8 @@ def install() -> None:
     ui.info(f"- نام برنامه: {name}")
     ui.info(f"- پوشه نصب: {dest}")
     ui.info(f"- پورت داخلی برنامه (خودکار انتخاب شد): {port}")
-    ui.info(f"- آدرس سایت: http://{host}/" if host else f"- آدرس سایت: همین سرور، پورت {iis_port}")
+    suffix = "" if iis_port == 80 else f":{iis_port}"
+    ui.info(f"- آدرس سایت: http://{host}{suffix}/" if host else f"- آدرس سایت: همین سرور، پورت {iis_port}")
     if os.path.isdir(dest) and os.listdir(dest):
         ui.warn("پوشه نصب خالی نیست: فایل‌های هم‌نام با فایل‌های برنامه جایگزین می‌شوند و بقیه فایل‌ها دست نمی‌خورند.")
     if not ui.confirm("نصب انجام شود؟"):
