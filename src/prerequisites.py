@@ -11,6 +11,7 @@ import archive
 import config
 import iis
 import nssm
+import ports
 import registry
 import ui
 from shell import DeployError, run
@@ -119,13 +120,21 @@ def dest_problem(dest: str, z: archive.ZipSummary) -> str:
         return f"درایو {dest[:2]} روی این سرور وجود ندارد."
     if os.path.isfile(dest):
         return "این مسیر یک فایل است، نه پوشه."
-    if os.path.isdir(dest) and os.listdir(dest):
-        return "این پوشه خالی نیست. یک پوشه جدید یا خالی انتخاب کنید."
+    owner = folder_owner(dest)
+    if owner:
+        return f"این پوشه همین الان مال «{owner}» روی سرور است. پوشه دیگری انتخاب کنید."
     if not archive.writable(dest):
         return "اجازه نوشتن در این مسیر وجود ندارد. مسیر دیگری انتخاب کنید."
     if not archive.enough_space(dest, z, with_backup=False):
         return "فضای خالی این درایو کافی نیست. درایو دیگری انتخاب کنید یا فضا آزاد کنید."
     return ""
+
+
+def folder_owner(dest: str) -> str:
+    """Name of the IIS site or Windows service already running from this folder, or ''."""
+    d = registry.norm(dest)
+    paths = {**{s: p.get("AppDirectory", "") for s, p in ports.nssm_services().items()}, **iis.site_root_paths()}
+    return next((n for n, p in paths.items() if p and registry.norm(os.path.expandvars(str(p))) == d), "")
 
 
 def clean_host(text: str) -> str:

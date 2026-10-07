@@ -89,6 +89,18 @@ archive.clear(dest)
 assert os.listdir(dest) == []
 archive.restore(dest + "_backup", dest)
 assert os.path.isfile(os.path.join(dest, ".next", "static", "a.css"))
+
+# non-empty folder (operator put the zip + the tool in it): same-named entries replaced, theirs kept everywhere
+for keep in ("default-standalone.zip", archive.SELF_NAME, "notes.txt"):
+    open(os.path.join(dest, keep), "w").close()
+archive.move_contents(archive.stage(info, dest), dest)  # .next and server.js already exist
+assert os.path.isfile(os.path.join(dest, "notes.txt"))
+archive.backup(dest, dest + "_backup")
+assert sorted(os.listdir(dest + "_backup")) == [".next", "notes.txt", "server.js"]
+archive.clear(dest)
+assert sorted(os.listdir(dest)) == sorted(["default-standalone.zip", archive.SELF_NAME])
+archive.restore(dest + "_backup", dest)
+assert os.path.isfile(os.path.join(dest, "server.js")) and os.path.isfile(os.path.join(dest, "default-standalone.zip"))
 for bad in ({"a/server.js": "", "b/x": ""}, {"deep/er/server.js": ""}):
     try:
         archive.inspect(make_zip(os.path.join(tmp, "bad.zip"), bad))

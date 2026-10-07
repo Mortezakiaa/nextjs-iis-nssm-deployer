@@ -87,7 +87,7 @@ def new_entry(name: str, port: int, deploy_path: str, node_path: str, log_dir: s
     }
 
 
-def _norm(p: str) -> str:
+def norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(p)) if p else ""
 
 
@@ -95,7 +95,7 @@ def rescan() -> dict:
     """Rebuild the registry from NSSM services running node + IIS sites (matched by folder, port, then name)."""
     old = _read() or {}
     site_paths = iis.site_root_paths()
-    site_by_path = {_norm(p): s for s, p in site_paths.items()}
+    site_by_path = {norm(p): s for s, p in site_paths.items()}
     site_by_port = {}
     for s, p in site_paths.items():
         for port in ports.webconfig_ports(p):
@@ -108,7 +108,7 @@ def rescan() -> dict:
             continue
         app_dir = os.path.expandvars(str(params.get("AppDirectory", "")))
         port = ports.env_port(params)
-        site = site_by_path.get(_norm(app_dir)) or site_by_port.get(port) or (svc if svc in site_paths else None)
+        site = site_by_path.get(norm(app_dir)) or site_by_port.get(port) or (svc if svc in site_paths else None)
         prev = old.get(find(old, svc) or "", {})
         stdout = str(params.get("AppStdout") or "")
         found[svc] = {

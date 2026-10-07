@@ -17,7 +17,6 @@ DEFAULTS = {
     "iis_port_min": 8001,       # IIS ports, used only when an app has no domain
     "iis_port_max": 8999,
     "logs_root": str(DATA_DIR / "logs"),
-    "deploy_root": r"C:\NextApps",  # suggested parent folder for new apps
     "max_upload_mb": 100,
     "websockets": False,
     "rollback": True,
@@ -39,7 +38,6 @@ S = _load()
 PORT_RANGE = (int(S["port_min"]), int(S["port_max"]))
 IIS_PORT_RANGE = (int(S["iis_port_min"]), int(S["iis_port_max"]))
 LOGS_ROOT = Path(S["logs_root"])
-DEPLOY_ROOT = S["deploy_root"]
 MAX_UPLOAD_BYTES = int(S["max_upload_mb"]) * 1024 * 1024
 WEBSOCKETS = bool(S["websockets"])
 ROLLBACK = bool(S["rollback"])

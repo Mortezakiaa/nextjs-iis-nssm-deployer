@@ -74,9 +74,8 @@ def install() -> None:
     z = ask_zip()
     name = ask_until("نام برنامه را به انگلیسی وارد کنید (مثلاً LandingPage):",
                      lambda n: prerequisites.name_problem(n, apps))
-    dest = os.path.normpath(ask_until("برنامه در کدام پوشه سرور نصب شود؟",
-                                      lambda d: prerequisites.dest_problem(os.path.normpath(d), z),
-                                      default=os.path.join(config.DEPLOY_ROOT, name), path=True))
+    dest = os.path.normpath(ask_until("برنامه در کدام پوشه سرور نصب شود؟ (مثلاً D:\\Apps\\MyApp)",
+                                      lambda d: prerequisites.dest_problem(os.path.normpath(d), z), path=True))
     host = ask_until("دامنه سایت چیست؟ (مثلاً shop.example.com)\nاگر هنوز دامنه ندارید، فقط Enter بزنید.",
                      lambda h: prerequisites.host_problem(prerequisites.clean_host(h)), allow_empty=True)
     host = prerequisites.clean_host(host) if host else ""
@@ -94,6 +93,8 @@ def install() -> None:
     ui.info(f"- پوشه نصب: {dest}")
     ui.info(f"- پورت داخلی برنامه (خودکار انتخاب شد): {port}")
     ui.info(f"- آدرس سایت: http://{host}/" if host else f"- آدرس سایت: همین سرور، پورت {iis_port}")
+    if os.path.isdir(dest) and os.listdir(dest):
+        ui.warn("پوشه نصب خالی نیست: فایل‌های هم‌نام با فایل‌های برنامه جایگزین می‌شوند و بقیه فایل‌ها دست نمی‌خورند.")
     if not ui.confirm("نصب انجام شود؟"):
         ui.info("نصب لغو شد. هیچ تغییری روی سرور داده نشد.")
         return
@@ -111,10 +112,13 @@ def install() -> None:
 
         ui.step(3, n, "باز کردن فایل zip در پوشه نصب")
         created = not os.path.exists(dest)
-        undo.append(lambda: archive.rmtree(dest) if created else archive.clear(dest))
         undo.append(lambda: archive.rmtree(archive.staging_dir(dest)))
         with ui.busy("در حال باز کردن فایل‌ها..."):
-            archive.move_contents(archive.stage(z, dest), dest)
+            src = archive.stage(z, dest)
+            added = os.listdir(src) + ["web.config"]  # all we put in; anything else in dest was there before
+            undo.append(lambda: archive.rmtree(dest) if created else
+                        [archive.remove(os.path.join(dest, x)) for x in added])
+            archive.move_contents(src, dest)
             archive.rmtree(archive.staging_dir(dest))
 
         ui.step(4, n, "ساخت فایل تنظیمات IIS (web.config)")

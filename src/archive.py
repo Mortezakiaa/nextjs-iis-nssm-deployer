@@ -3,6 +3,7 @@ Every filesystem path goes through the \\\\?\\ prefix: standalone node_modules p
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import zipfile
@@ -72,9 +73,27 @@ def stage(z: ZipSummary, target: str) -> str:
 
 
 def move_contents(src: str, dst: str) -> None:
+    """Move src's entries into dst, replacing same-named ones; other files in dst are left alone."""
     os.makedirs(lp(dst), exist_ok=True)
     for name in os.listdir(lp(src)):
+        remove(os.path.join(dst, name))
         os.replace(lp(os.path.join(src, name)), lp(os.path.join(dst, name)))
+
+
+SELF_NAME = os.path.basename(sys.executable).lower()
+
+
+def ours(name: str) -> bool:
+    """Operators keep the zip and NextDeployer.exe inside the app folder. Never delete, back up or restore over
+    them: the running exe is locked and would make every update fail."""
+    n = name.lower()
+    return n.endswith(".zip") or n == SELF_NAME
+
+
+def _skip_ours(root: str):
+    """copytree ignore= that leaves the operator's files at the top level of root out of the copy."""
+    top = lp(root)
+    return lambda d, names: [n for n in names if d == top and ours(n)]
 
 
 def retry(fn, seconds: int = 30):
@@ -99,29 +118,35 @@ def rmtree(path: str) -> None:
         retry(lambda: shutil.rmtree(lp(path), onexc=_make_writable))
 
 
+def remove(path: str) -> None:
+    """Delete a file or folder; nothing to do if it doesn't exist."""
+    p = lp(path)
+    if os.path.isdir(p) and not os.path.islink(p):
+        retry(lambda: shutil.rmtree(p, onexc=_make_writable))
+    elif os.path.lexists(p):
+        retry(lambda: (os.chmod(p, stat.S_IWRITE), os.remove(p)))
+
+
 def clear(path: str) -> None:
-    """Delete everything inside path, keep the folder itself (IIS watches it)."""
+    """Delete everything inside path except the operator's files (see ours), keep the folder itself (IIS watches it)."""
     os.makedirs(lp(path), exist_ok=True)
     for name in os.listdir(lp(path)):
-        p = lp(os.path.join(path, name))
-        if os.path.isdir(p) and not os.path.islink(p):
-            retry(lambda: shutil.rmtree(p, onexc=_make_writable))
-        else:
-            retry(lambda: (os.chmod(p, stat.S_IWRITE), os.remove(p)))
+        if not ours(name):
+            remove(os.path.join(path, name))
 
 
 def backup(src: str, dst: str) -> None:
     """Copy src to dst, keeping only the newest backup. The old backup survives until the new copy is complete."""
     tmp = dst.rstrip("\\/") + ".nd-tmp"
     rmtree(tmp)
-    shutil.copytree(lp(src), lp(tmp), symlinks=True)
+    shutil.copytree(lp(src), lp(tmp), symlinks=True, ignore=_skip_ours(src))
     rmtree(dst)
     os.replace(lp(tmp), lp(dst))
 
 
 def restore(backup_dir: str, target: str) -> None:
     clear(target)
-    shutil.copytree(lp(backup_dir), lp(target), symlinks=True, dirs_exist_ok=True)
+    shutil.copytree(lp(backup_dir), lp(target), symlinks=True, dirs_exist_ok=True, ignore=_skip_ours(backup_dir))
 
 
 def existing_ancestor(path: str) -> str:
