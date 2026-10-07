@@ -19,7 +19,7 @@ from logger import log
 from shell import DeployError
 
 STATUS_FA = {"success": "موفق", "failed": "ناموفق", "rolled_back": "برگشت به نسخه قبلی",
-             "rollback_failed": "برگشت ناموفق", "installing": "نیمه‌کاره", "discovered": "پیدا شده در بازبینی"}
+             "rollback_failed": "برگشت ناموفق", "installing": "نیمه‌کاره", "discovered": "پیدا شده روی سرور"}
 
 
 # ---------------------------------------------------------------- shared questions
@@ -165,7 +165,7 @@ def install() -> None:
 
 # ---------------------------------------------------------------- update
 def app_problem(app: dict) -> str:
-    rescan_hint = " از منوی اصلی گزینه «بازبینی سرور» را بزنید و دوباره امتحان کنید."
+    rescan_hint = " به تیم فنی اطلاع دهید."
     if not app.get("port") or not app.get("deploy_path") or not app.get("nssm_service"):
         return "اطلاعات این برنامه ناقص است." + rescan_hint
     if not nssm.exists(app["nssm_service"]):
@@ -293,7 +293,13 @@ def remove() -> None:
         uninstall.run(name, apps[name])
 
 
-def show_apps(apps: dict) -> None:
+def list_apps() -> None:
+    ui.title("فهرست برنامه‌های نصب‌شده")
+    with ui.busy("در حال خواندن وضعیت برنامه‌ها..."):
+        apps = registry.load()
+    if not apps:
+        ui.info("هیچ برنامه‌ای ثبت نشده است.")
+        return
     nssm_path = prerequisites.find_nssm()
     for name in sorted(apps, key=str.lower):
         a = apps[name]
@@ -303,30 +309,11 @@ def show_apps(apps: dict) -> None:
         ui.info(f"پوشه: {a.get('deploy_path')} - آخرین نصب: {a.get('last_deploy_at') or '-'} {STATUS_FA.get(last, last)}")
 
 
-def list_apps() -> None:
-    ui.title("فهرست برنامه‌های نصب‌شده")
-    with ui.busy("در حال خواندن وضعیت برنامه‌ها..."):
-        apps = registry.load()
-    if not apps:
-        ui.info("هیچ برنامه‌ای ثبت نشده است.")
-        return
-    show_apps(apps)
-
-
-def rescan() -> None:
-    ui.title("بازبینی سرور و بازسازی فهرست برنامه‌ها")
-    with ui.busy("در حال بررسی سرویس‌ها و سایت‌های این سرور..."):
-        apps = registry.rescan()
-    ui.ok(f"بازبینی تمام شد: {len(apps)} برنامه پیدا شد و فهرست به‌روز شد.")
-    show_apps(apps)
-
-
 MENU = [
     ("نصب برنامه جدید", install),
     ("به‌روزرسانی برنامه نصب‌شده", update),
     ("حذف برنامه", remove),
     ("فهرست برنامه‌های نصب‌شده", list_apps),
-    ("بازبینی سرور و بازسازی فهرست برنامه‌ها", rescan),
     ("خروج", None),
 ]
 
