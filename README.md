@@ -59,7 +59,7 @@ Set `output: 'standalone'` in `next.config.js`. After `next build`:
 
 ## 2. Operator guide
 
-1. Copy `NextDeployer.exe` to the server and double-click it.
+1. Download `NextDeployer.exe` from the [latest release](https://github.com/Mortezakiaa/nextjs-iis-nssm-deployer/releases/latest), copy it to the server and double-click it.
 2. When Windows asks whether to allow the app to make changes, click **Yes**.
 3. In the main menu, type the number of an option and press Enter.
 
