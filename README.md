@@ -1,138 +1,162 @@
-# NextDeployer — ابزار نصب و به‌روزرسانی خودکار برنامه‌های Next.js روی ویندوز سرور
+# NextDeployer
 
-این ابزار یک فایل اجرایی تکی (`NextDeployer.exe`) است که نیاز به نصب ندارد. با دوبار کلیک باز می‌شود، خودش اجازهٔ مدیر (Administrator) را از ویندوز می‌گیرد و قدم‌به‌قدم، به زبان ساده، کار نصب، به‌روزرسانی و حذف برنامه‌های Next.js را انجام می‌دهد.
+**English** | [فارسی](README.fa.md)
 
-ساختار هر برنامه روی سرور:
+A single-file Windows tool (`NextDeployer.exe`) that installs, updates and removes Next.js apps on Windows Server behind IIS. There is nothing to install: double-click it, accept the Administrator (UAC) prompt, and it walks the operator through each task step by step.
+
+> The tool's user interface is in **Persian (Farsi)**.
+
+How each app runs on the server:
 
 ```
-مرورگر  ←  سایت IIS (URL Rewrite + ARR)  ←  برنامهٔ Node.js که به‌صورت سرویس ویندوز (NSSM) اجرا می‌شود
+Browser  →  IIS site (URL Rewrite + ARR)  →  Node.js app running as a Windows service (NSSM)
 ```
 
-هر برنامه روی یک پورت داخلی جدا (3001، 3002، ...) فقط روی `127.0.0.1` اجرا می‌شود و فقط از طریق IIS قابل دسترسی است.
+Each app gets its own internal port (3001, 3002, ...), listens only on `127.0.0.1`, and can be reached only through IIS.
 
 ---
 
-## ۱. پیش‌نیازهای سرور (فقط یک بار، توسط تیم فنی)
+## Important notes (read before first use)
 
-ابزار قبل از هر کاری همهٔ این موارد را بررسی می‌کند و اگر چیزی کم باشد، **بدون هیچ تغییری روی سرور** متوقف می‌شود و می‌گوید چه چیزی کم است.
+1. **Prerequisites are checked, not installed.** IIS, URL Rewrite, ARR, Node.js and NSSM must already be on the server (see [Server prerequisites](#1-server-prerequisites-one-time)). If anything is missing, the tool stops before changing the server.
+2. **The tool does not build your app.** It deploys a ready-made zip of the Next.js `standalone` output (see [Preparing the Next.js build](#preparing-the-nextjs-build)). `NEXT_PUBLIC_*` variables are baked in at build time, so set them before `next build`.
+3. **Updates replace the whole app folder.** On update, everything in the app folder is deleted and replaced with the new zip's contents. Only `*.zip` files and `NextDeployer.exe` are kept. Never store uploads, user data, SQLite files or hand-edited config inside the app folder. Keep them in a separate folder, or ship them inside the zip. This also applies to files that were already in the folder when you first installed into it.
+4. **Only one backup is kept.** Before each update, the current version is copied to `<app folder>_backup`, overwriting the previous backup. You can roll back one version only.
+5. **Free disk space.** An update needs roughly twice the unpacked app size free on the drive: one copy for the new version and one for the backup.
+6. **Short downtime on update.** The site is unavailable for a few seconds while the service restarts.
+7. **Environment variables (e.g. `DATABASE_URL`) are set on the service, not by the tool.** After the first install, add them with `nssm edit <AppName>` (Environment tab), then run `nssm restart <AppName>`. The tool keeps them across updates. Do not set `PORT`, `HOSTNAME` or `NODE_ENV` there: the tool manages those and overwrites them.
+8. **Server-wide ARR change.** The tool enables the ARR proxy and sets `preserveHostHeader`, `reverseRewriteHostInResponseHeaders` and a 2-minute timeout at the **server level** (`system.webServer/proxy`). When it changes these settings, it recycles all running application pools. If other sites on the same server use ARR, check that they still work.
+9. **HTTP only.** The tool creates an `http` binding. For HTTPS, add the certificate and an `https` binding in IIS Manager. If the site uses a port other than 80, open that port in Windows Firewall. Domains need a DNS record pointing to the server.
+10. **Service account.** Services are created with the NSSM default account (LocalSystem). They start automatically with Windows and restart 5 seconds after a crash. To use a less privileged account, change it with `nssm edit <AppName>` (Log on tab).
+11. **Unsigned executable.** `NextDeployer.exe` is built with PyInstaller and is not code-signed. Windows SmartScreen or antivirus software may warn about it. You can build it yourself from source (see [For developers](#6-for-developers)).
+12. **Use the tool for every change.** Don't rename or delete the app's IIS site, app pool or NSSM service by hand. The tool keeps its own list in `C:\ProgramData\NextDeployer\apps.json`. It rebuilds that list from the server if the file is lost, but manual renames break the link.
 
-| پیش‌نیاز | روش نصب |
+---
+
+## 1. Server prerequisites (one-time)
+
+Before doing anything, the tool checks all of these. If something is missing, it stops **without changing the server** and says what is missing.
+
+| Prerequisite | How to install |
 |---|---|
-| **IIS** | Server Manager ← Add Roles and Features ← نقش **Web Server (IIS)**. اگر برنامه‌ها WebSocket لازم دارند، زیرمجموعهٔ **WebSocket Protocol** را هم انتخاب کنید. |
-| **URL Rewrite 2.1** | از سایت iis.net صفحهٔ URL Rewrite را دانلود و نصب کنید. |
-| **ARR 3.0** (Application Request Routing) | از سایت iis.net دانلود و نصب کنید. **فعال‌کردن پراکسی لازم نیست**؛ ابزار خودش آن را فعال و درست تنظیم می‌کند. |
-| **Node.js** (نسخهٔ LTS، ۱۸ یا بالاتر) | از nodejs.org نسخهٔ Windows Installer (.msi) را نصب کنید. ابزار مسیر آن را خودش پیدا می‌کند. |
-| **NSSM** | از nssm.cc فایل zip را دانلود کنید و `win64\nssm.exe` را در `C:\Program Files\nssm\nssm.exe` کپی کنید. (مسیرهای `C:\nssm\...` و PATH هم پیدا می‌شوند.) |
+| **IIS** | Server Manager → Add Roles and Features → **Web Server (IIS)** role. If your apps need WebSockets, also select **WebSocket Protocol**. |
+| **URL Rewrite 2.1** | Download and install from iis.net. |
+| **ARR 3.0** (Application Request Routing) | Download and install from iis.net. **No need to enable the proxy yourself**: the tool enables and configures it. |
+| **Node.js** (LTS, 18 or later) | Install the Windows Installer (.msi) from nodejs.org. The tool finds it automatically. |
+| **NSSM** | Download the zip from nssm.cc and copy `win64\nssm.exe` to `C:\Program Files\nssm\nssm.exe`. (`C:\nssm\...` and `PATH` are also searched.) |
 
-### خروجی برنامهٔ Next.js (برای تیم توسعه)
+The tool must run as Administrator. It requests this itself via UAC.
 
-در `next.config.js` باید `output: 'standalone'` تنظیم شده باشد. بعد از `next build`:
+### Preparing the Next.js build
 
-1. پوشهٔ `.next/static` را به `.next/standalone/.next/static` کپی کنید.
-2. پوشهٔ `public` را (اگر وجود دارد) به `.next/standalone/public` کپی کنید.
-3. **محتوای** پوشهٔ `.next/standalone` را zip کنید (فایل `server.js` باید در ریشهٔ zip یا داخل یک پوشهٔ تکی باشد).
+Set `output: 'standalone'` in `next.config.js`. After `next build`:
 
----
-
-## ۲. راهنمای استفاده برای اپراتور
-
-1. فایل `NextDeployer.exe` را روی سرور کپی کنید و روی آن دوبار کلیک کنید.
-2. اگر ویندوز پرسید «اجازه می‌دهید این برنامه تغییراتی ایجاد کند؟»، **Yes** را بزنید.
-3. در منوی اصلی، عدد گزینهٔ مورد نظر را بنویسید و Enter بزنید.
-
-> نکته: برای وارد کردن مسیر فایل یا پوشه، می‌توانید آن را با ماوس داخل پنجرهٔ برنامه بکشید و رها کنید.
-
-### گزینهٔ ۱ — نصب برنامهٔ جدید
-
-ابزار فقط این سؤال‌ها را می‌پرسد:
-
-1. **مسیر فایل zip برنامه** — ابزار سالم بودن فایل و وجود `server.js` را بررسی می‌کند.
-2. **نام برنامه** به انگلیسی (مثلاً `LandingPage`) — همین نام برای سرویس ویندوز و سایت IIS استفاده می‌شود.
-3. **پوشهٔ نصب** روی سرور (مثلاً `I:\LandingPage`) — پوشه لازم نیست خالی باشد؛ فایل‌های هم‌نام با فایل‌های برنامه جایگزین می‌شوند و بقیه (مثلاً خود فایل zip یا `NextDeployer.exe`) دست نمی‌خورند. فقط پوشه‌ای که مال برنامهٔ دیگری روی سرور است قبول نمی‌شود.
-4. **دامنهٔ سایت** (مثلاً `shop.example.com`) — اگر دامنه ندارید فقط Enter بزنید.
-5. **پورت سایت در IIS** (برای سایت با دامنه معمولاً `80`) — چند سایت با دامنه‌های مختلف می‌توانند پورت یکسان داشته باشند. اگر این پورت با همین دامنه مال سایت دیگری باشد، یا برنامهٔ دیگری روی سرور از آن استفاده کند، ابزار قبول نمی‌کند و پورت دیگری می‌خواهد.
-
-پورت داخلی برنامه (NSSM) **خودکار** انتخاب می‌شود و فقط برای اطلاع نمایش داده می‌شود. بعد از تأیید، ابزار این مراحل را انجام می‌دهد:
-بررسی پیش‌نیازها ← رزرو پورت ← باز کردن zip ← ساخت web.config ← ساخت سایت IIS ← ساخت سرویس ویندوز ← روشن کردن ← بررسی سلامت ← ثبت در فهرست.
-
-اگر هر مرحله‌ای خطا بدهد، ابزار همهٔ تغییرات نیمه‌کاره را پاک می‌کند تا سرور تمیز بماند.
-
-> اگر نام تکراری وارد کنید، ابزار نصب را قبول نمی‌کند و شما را به گزینهٔ «به‌روزرسانی» راهنمایی می‌کند.
-
-### گزینهٔ ۲ — به‌روزرسانی برنامهٔ نصب‌شده
-
-1. از فهرست، عدد برنامه را انتخاب کنید.
-2. مسیر فایل zip نسخهٔ جدید را وارد کنید.
-3. تأیید کنید.
-
-پورت و پوشه دوباره پرسیده نمی‌شوند. ابزار: نسخهٔ جدید را کنار نسخهٔ فعلی باز می‌کند ← از نسخهٔ فعلی پشتیبان می‌گیرد (`<پوشه>_backup`) ← برنامه را خاموش می‌کند و صبر می‌کند کاملاً بسته شود ← فایل‌ها را جایگزین می‌کند ← روشن می‌کند ← سلامت را بررسی می‌کند.
-
-**اگر نسخهٔ جدید بالا نیاید، ابزار خودکار به نسخهٔ قبلی برمی‌گردد** و نتیجه را گزارش می‌کند. شما لازم نیست تصمیمی بگیرید؛ فقط پیام خطا را برای تیم فنی بفرستید.
-
-### گزینهٔ ۳ — حذف برنامه
-
-برنامه را از فهرست انتخاب کنید. ابزار دقیقاً می‌گوید چه چیزهایی حذف می‌شوند و جداگانه می‌پرسد:
-- پوشهٔ برنامه و نسخهٔ پشتیبان پاک شود یا نه؟
-- پوشهٔ گزارش‌ها پاک شود یا نه؟
-
-بعد از تأیید نهایی: سرویس ویندوز متوقف و حذف می‌شود، سایت و Application Pool از IIS حذف می‌شوند و پورت آزاد می‌شود. اگر چیزی قبلاً دستی حذف شده باشد، ابزار بدون خطا از آن رد می‌شود.
-
-### گزینهٔ ۴ — فهرست برنامه‌های نصب‌شده
-نام، پورت، وضعیت فعلی و زمان آخرین نصب هر برنامه را نشان می‌دهد.
+1. Copy `.next/static` to `.next/standalone/.next/static`.
+2. Copy `public` (if it exists) to `.next/standalone/public`.
+3. Zip the **contents** of `.next/standalone`. `server.js` must be at the root of the zip, or inside a single top-level folder.
 
 ---
 
-## ۳. معنی نتیجهٔ بررسی سلامت
+## 2. Operator guide
 
-| پیام | معنی | چه کار کنیم |
+1. Copy `NextDeployer.exe` to the server and double-click it.
+2. When Windows asks whether to allow the app to make changes, click **Yes**.
+3. In the main menu, type the number of an option and press Enter.
+
+> Tip: to enter a file or folder path, you can drag it into the window.
+
+### Option 1: Install a new app
+
+The tool asks only for:
+
+1. **Path to the app's zip.** It checks that the zip is valid and contains `server.js`.
+2. **App name** in English (e.g. `LandingPage`). The same name is used for the Windows service and the IIS site.
+3. **Install folder** on the server (e.g. `D:\Apps\LandingPage`). The folder doesn't have to be empty: files with the same names are replaced and other files are left alone during install. They will be removed by the first update (see Important notes, item 3). A folder that belongs to another app on the server is rejected.
+4. **Site domain** (e.g. `shop.example.com`). Press Enter if you don't have one yet.
+5. **IIS site port** (usually `80` for a site with a domain). Several sites with different domains can share a port. If the port is already used by a site with the same domain, or by another program, the tool asks for a different one.
+
+The app's internal (NSSM) port is chosen **automatically** and shown for information. After you confirm, the tool runs these steps:
+check prerequisites → reserve port → unpack zip → write web.config → create IIS site → create Windows service → start → health check → save to app list.
+
+If any step fails, the tool undoes all partial changes so the server stays clean.
+
+> If the name is already taken, the tool refuses the install and points you to the Update option.
+
+### Option 2: Update an installed app
+
+1. Pick the app from the list.
+2. Enter the path to the new zip.
+3. Confirm.
+
+Port and folder are not asked again. The tool unpacks the new version next to the running one, backs up the current version to `<folder>_backup`, stops the service and waits until it has fully exited, replaces the files, starts the service, and runs a health check.
+
+**If the new version doesn't come up, the tool automatically rolls back to the previous version** and reports the result. Just send the error message to your technical team.
+
+### Option 3: Remove an app
+
+Pick the app from the list. The tool shows exactly what will be removed and asks separately:
+- Delete the app folder and its backup?
+- Delete the log folder?
+
+After final confirmation, it stops and removes the Windows service, removes the IIS site and app pool, and frees the port. Anything that was already removed by hand is skipped without an error.
+
+### Option 4: List installed apps
+
+Shows each app's name, port, current status and last deployment time.
+
+---
+
+## 3. Health check results
+
+| Result | Meaning | What to do |
 |---|---|---|
-| «برنامه با موفقیت راه‌اندازی شد و سالم است» | همه چیز درست است. آدرس سایت نمایش داده می‌شود. | — |
-| «اپلیکیشن سالم بالا آمده، مشکل از تنظیمات IIS/ARR است» | برنامه کار می‌کند ولی IIS درخواست‌ها را به آن نمی‌رساند. | موارد فهرست‌شده روی صفحه را بررسی کنید (بخش عیب‌یابی). |
-| «خود اپلیکیشن Node بالا نیامده» | خود برنامه خطا دارد. آخرین خطاهای برنامه روی صفحه نمایش داده می‌شود. | همان متن خطا را برای تیم توسعه بفرستید. |
-| «هشدار امنیتی: برنامه از بیرون هم مستقیم در دسترس است» | برنامه به‌جای `127.0.0.1` روی همهٔ آدرس‌ها گوش می‌دهد. | به تیم توسعه اطلاع دهید (متغیر `HOSTNAME` نباید در کد بازنویسی شود). |
+| App started and is healthy | Everything works. The site URL is shown. | Nothing. |
+| App is healthy, the problem is the IIS/ARR configuration | The app works, but IIS doesn't forward requests to it. | Check the items listed on screen (see Troubleshooting). |
+| The Node app itself didn't start | The app has an error. Its latest error output is shown. | Send that error text to the development team. |
+| Security warning: the app is directly reachable from outside | The app listens on all addresses instead of `127.0.0.1`. | Tell the development team (the code must not override `HOSTNAME`). |
 
 ---
 
-## ۴. عیب‌یابی
+## 4. Troubleshooting
 
-### خطای 500 هنگام ارسال فرم‌ها (Server Actions)
-علت: ARR سربرگ `Host` را به آدرس داخلی (`127.0.0.1:3001`) تغییر می‌دهد و Next.js درخواست را به‌عنوان حملهٔ CSRF رد می‌کند.
-راه‌حل: ابزار در هر بار اجرا تنظیمات `preserveHostHeader` و بقیهٔ تنظیمات پراکسی را خودکار درست می‌کند. اگر باز هم خطا دیدید، یک بار در Command Prompt (Administrator) دستور `iisreset` را اجرا کنید. برای بررسی دستی:
+### Error 500 when submitting forms (Server Actions)
+Cause: ARR rewrites the `Host` header to the internal address (`127.0.0.1:3001`), and Next.js rejects the request as CSRF.
+Fix: on every run, the tool sets `preserveHostHeader` and the other proxy settings. If you still see the error, run `iisreset` once in an Administrator Command Prompt. To check manually:
 ```cmd
 %windir%\system32\inetsrv\appcmd.exe list config -section:system.webServer/proxy
 ```
-باید `enabled="true"` و `preserveHostHeader="true"` باشد.
+You should see `enabled="true"` and `preserveHostHeader="true"`.
 
-### تداخل پورت
-ابزار برای پیدا کردن پورت آزاد همهٔ این منابع را با هم بررسی می‌کند: تنظیمات همهٔ سرویس‌های NSSM (حتی خاموش‌ها)، فایل web.config همهٔ سایت‌های IIS، اتصال‌های (Binding) IIS، پورت‌های در حال استفاده (`netstat`)، بازه‌های رزروشدهٔ Hyper-V/Docker و فهرست خود ابزار. سپس واقعاً روی پورت امتحان می‌کند.
-اگر با این حال تداخل دیدید (مثلاً برنامهٔ دیگری بعداً همان پورت را گرفته): موضوع را به تیم فنی اطلاع دهید. بازهٔ پورت در `settings.json` قابل تغییر است (پایین‌تر).
+### Port conflicts
+To find a free port, the tool checks all of these together: every NSSM service's configuration (including stopped ones), every IIS site's web.config, IIS bindings, ports in use (`netstat`), Hyper-V/Docker reserved ranges, and its own app list. It then test-binds the port.
+If you still get a conflict (for example, another program took the port later), tell your technical team. The port range can be changed in `settings.json` (below).
 
-### سرویس روشن نمی‌شود
-- ابزار در صورت خطا آخرین ۲۰ خط خطای برنامه را خودش نشان می‌دهد.
-- فایل‌های کامل گزارش برنامه: `C:\ProgramData\NextDeployer\logs\<نام برنامه>\err.log` و `out.log`
-- علت‌های رایج: zip ناقص (پوشهٔ `node_modules` داخل standalone نیست)، نبودن متغیرهای محیطی لازم برنامه (مثل آدرس دیتابیس)، نسخهٔ قدیمی Node.js.
-- وضعیت «متوقف موقت» یعنی برنامه مدام خطا می‌دهد و NSSM هر ۵ ثانیه دوباره اجرایش می‌کند.
+### The service doesn't start
+- On failure, the tool shows the last 20 lines of the app's error log.
+- Full app logs: `C:\ProgramData\NextDeployer\logs\<AppName>\err.log` and `out.log`.
+- Common causes: an incomplete zip (`node_modules` missing from standalone), missing environment variables the app needs (e.g. a database URL), or an old Node.js version.
+- A "paused" status means the app keeps crashing and NSSM restarts it every 5 seconds.
 
-### سایت با نام دامنه باز نمی‌شود
-- اگر ابزار گفت «دامنه هنوز به سرور وصل نشده است (DNS)»، رکورد DNS دامنه باید به IP این سرور اشاره کند (کار تیم شبکه).
-- اگر سایت روی پورتی غیر از 80 (مثلاً 8080) نصب شده، آن پورت باید در فایروال ویندوز باز باشد.
-- ابزار فقط اتصال `http` می‌سازد؛ برای `https` گواهی را در IIS Manager به سایت اضافه کنید (Bindings ← Add ← https).
+### The site doesn't open by its domain name
+- If the tool says the domain isn't pointing to the server yet (DNS), the domain's DNS record must point to this server's IP.
+- If the site uses a port other than 80 (e.g. 8080), that port must be open in Windows Firewall.
+- The tool creates only an `http` binding. For `https`, add the certificate to the site in IIS Manager (Bindings → Add → https).
 
-### ظاهر سایت به‌هم‌ریخته است (CSS/JS/تصاویر لود نمی‌شوند)
-پوشه‌های `.next/static` و `public` داخل zip نیستند. ابزار هنگام بررسی zip در این مورد هشدار می‌دهد. از تیم توسعه بخواهید طبق بخش «خروجی برنامهٔ Next.js» این دو پوشه را داخل standalone کپی و دوباره zip کنند.
+### The site looks broken (CSS/JS/images don't load)
+`.next/static` and `public` are missing from the zip. The tool warns about this when it checks the zip. Ask the development team to copy both folders into standalone as described in [Preparing the Next.js build](#preparing-the-nextjs-build) and zip it again.
 
 ---
 
-## ۵. فایل‌ها و تنظیمات
+## 5. Files and settings
 
-| مسیر | توضیح |
+| Path | Description |
 |---|---|
-| `C:\ProgramData\NextDeployer\apps.json` | فهرست برنامه‌ها (منبع اصلی برای به‌روزرسانی و حذف). اگر پاک یا خراب شود، ابزار در اجرای بعدی آن را خودکار از روی سرویس‌های NSSM و سایت‌های IIS دوباره می‌سازد. |
-| `C:\ProgramData\NextDeployer\deployer.log` | گزارش کامل فنی ابزار: همهٔ دستورها، پارامترها و نتیجه‌ها. در صورت مشکل این فایل را برای تیم فنی بفرستید. |
-| `C:\ProgramData\NextDeployer\logs\<نام برنامه>\` | خروجی و خطاهای خود برنامه (`out.log`، `err.log`)، با چرخش خودکار در ۱۰ مگابایت. |
-| `C:\ProgramData\NextDeployer\settings.json` | تنظیمات اختیاری (در صورت نیاز توسط تیم فنی ساخته می‌شود). |
+| `C:\ProgramData\NextDeployer\apps.json` | The app list (the source of truth for update and remove). If it is deleted or corrupted, the tool rebuilds it from the NSSM services and IIS sites on the next run. |
+| `C:\ProgramData\NextDeployer\deployer.log` | The tool's full technical log: every command, parameter and result. Send this file to your technical team if something goes wrong. |
+| `C:\ProgramData\NextDeployer\logs\<AppName>\` | The app's own output and errors (`out.log`, `err.log`), rotated at 10 MB. |
+| `C:\ProgramData\NextDeployer\settings.json` | Optional settings (create it only if needed). |
 
-نمونهٔ `settings.json` (همهٔ کلیدها اختیاری‌اند؛ مقادیر زیر پیش‌فرض هستند):
+Example `settings.json` (all keys are optional; the values shown are the defaults):
 
 ```json
 {
@@ -147,41 +171,41 @@
 }
 ```
 
-- `rollback`: با `false` برگشت خودکار بعد از به‌روزرسانی ناموفق غیرفعال می‌شود (نسخهٔ پشتیبان همچنان ساخته می‌شود).
-- `websockets`: با `true` در web.config پشتیبانی WebSocket روشن می‌شود (ویژگی WebSocket Protocol در IIS باید نصب باشد).
-- `max_upload_mb`: حداکثر حجم درخواست/آپلود که IIS قبول می‌کند.
+- `rollback`: `false` turns off automatic rollback after a failed update (the backup is still made).
+- `websockets`: `true` enables WebSocket support in web.config (requires the IIS WebSocket Protocol feature).
+- `max_upload_mb`: the maximum request/upload size IIS accepts.
 
-### اگر فارسی در پنجره درست نمایش داده نشد
-ابزار در پنجرهٔ کلاسیک ویندوز (conhost) فونت را خودکار روی Courier New می‌گذارد و متن را راست‌به‌چپ مرتب می‌کند. اگر از ترمینالی استفاده می‌کنید که خودش راست‌به‌چپ را پشتیبانی می‌کند و حروف برعکس دیده می‌شوند، قبل از اجرا متغیر محیطی `NEXTDEPLOYER_TEXT=raw` را تنظیم کنید.
+### If Persian text doesn't display correctly
+In the classic Windows console (conhost), the tool sets the font to Courier New and reorders text right-to-left. If your terminal already handles right-to-left text and the letters appear reversed, set the environment variable `NEXTDEPLOYER_TEXT=raw` before running the tool.
 
 ---
 
-## ۶. برای توسعه‌دهندگان
+## 6. For developers
 
-ساختار کد:
+Code layout:
 
 ```
 src/
-  main.py            نقطهٔ شروع، منو و مراحل نصب/به‌روزرسانی
-  ui.py              همهٔ پیام‌ها و سؤال‌های فارسی، رنگ‌ها، نمایش راست‌به‌چپ
-  prerequisites.py   بررسی پیش‌نیازها + فعال‌سازی خودکار ARR
-  ports.py           پیدا کردن پورت آزاد (NSSM + web.config + Binding + netstat + بازه‌های رزرو)
-  registry.py        خواندن/نوشتن اتمیک apps.json و بازسازی آن از روی سرور
-  iis.py             دستورهای appcmd: سایت، Application Pool، تنظیمات پراکسی
-  nssm.py            دستورهای nssm: نصب، تنظیم، روشن/خاموش، حذف، وضعیت
-  webconfig.py       ساخت web.config از قالب کامل + اعتبارسنجی
-  archive.py         بررسی و باز کردن zip، پشتیبان‌گیری، جایگزینی فایل‌ها (مسیرهای طولانی)
-  healthcheck.py     بررسی سلامت و تفسیر نتیجه
-  rollback.py        برگشت خودکار (ماژول مستقل، قابل غیرفعال‌سازی)
-  uninstall.py       حذف کامل برنامه
-  logger.py          گزارش فنی ابزار
-  config.py          ثابت‌ها و تنظیمات پیش‌فرض
-  shell.py           اجرای دستورهای خارجی با رمزگشایی امن خروجی (UTF-16/UTF-8/cp1256/...)
-tests/test_core.py   بررسی خودکار منطق بدون نیاز به IIS/NSSM
-build.py             ساخت فایل اجرایی
+  main.py            entry point, menu, install/update flows
+  ui.py              all Persian messages and prompts, colors, RTL display
+  prerequisites.py   prerequisite checks + automatic ARR configuration
+  ports.py           free-port search (NSSM + web.config + bindings + netstat + reserved ranges)
+  registry.py        atomic read/write of apps.json and rebuilding it from the server
+  iis.py             appcmd wrappers: sites, app pools, proxy settings
+  nssm.py            nssm wrappers: install, configure, start/stop, remove, status
+  webconfig.py       web.config generation from a full template + validation
+  archive.py         zip validation and extraction, backup, file replacement (long paths)
+  healthcheck.py     health check and result interpretation
+  rollback.py        automatic rollback (standalone module, can be disabled)
+  uninstall.py       full app removal
+  logger.py          the tool's technical log
+  config.py          constants and default settings
+  shell.py           runs external commands with safe output decoding (UTF-16/UTF-8/cp1256/...)
+tests/test_core.py   logic self-check, no IIS/NSSM required
+build.py             builds the executable
 ```
 
-ساخت فایل اجرایی (Python 3.11 یا بالاتر):
+Build the executable (Python 3.11 or later):
 
 ```cmd
 python -m venv .venv
@@ -189,6 +213,6 @@ python -m venv .venv
 .venv\Scripts\python build.py
 ```
 
-خروجی: `dist\NextDeployer.exe` (تک‌فایلی، با `--uac-admin` که هنگام اجرا خودکار اجازهٔ مدیر می‌گیرد). `build.py` قبل از ساخت، `tests/test_core.py` را اجرا می‌کند.
+Output: `dist\NextDeployer.exe`, a single file built with `--uac-admin` so it asks for Administrator rights on launch. `build.py` runs `tests/test_core.py` first and refuses to build if it fails.
 
-نکته: اطلاعات سرویس‌های NSSM مستقیماً از رجیستری (`HKLM\SYSTEM\CurrentControlSet\Services\<نام>\Parameters`) خوانده می‌شود؛ همان جایی که `nssm get` از آن می‌خواند، ولی بدون اجرای جداگانهٔ nssm برای هر سرویس.
+Note: NSSM service settings are read directly from the registry (`HKLM\SYSTEM\CurrentControlSet\Services\<name>\Parameters`), the same place `nssm get` reads from, without starting a separate nssm process for each service.
