@@ -15,9 +15,19 @@ TEMPLATE = """<?xml version="1.0" encoding="utf-8"?>
       <rules>
         <rule name="ReverseProxyToNode" stopProcessing="true">
           <match url="(.*)" />
+          <serverVariables>
+            <set name="HTTP_X_FORWARDED_HOST" value="{{HTTP_HOST}}" />
+            <set name="HTTP_X_FORWARDED_PROTO" value="{{MapProto:{{HTTPS}}}}" />
+          </serverVariables>
           <action type="Rewrite" url="http://127.0.0.1:{port}/{{R:1}}" />
         </rule>
       </rules>
+      <rewriteMaps>
+        <rewriteMap name="MapProto">
+          <add key="on" value="https" />
+          <add key="off" value="http" />
+        </rewriteMap>
+      </rewriteMaps>
     </rewrite>
     <httpErrors existingResponse="PassThrough" />
     <handlers>
@@ -45,6 +55,16 @@ def validate(path: str, port: int) -> bool:
     except (ET.ParseError, OSError):
         return False
     return any(a.get("url", "").startswith(f"http://127.0.0.1:{port}/") for a in actions)
+
+
+def server_variables(path: str) -> list:
+    """Names of every server variable the web.config sets, at any depth. IIS answers 500.50 unless each one is in
+    the server-level allowedServerVariables. Empty if the file doesn't parse (validate reports that)."""
+    try:
+        sets = ET.parse(path).getroot().findall(".//serverVariables/set")
+    except (ET.ParseError, OSError):
+        return []
+    return [s.get("name") for s in sets if s.get("name")]
 
 
 def write(folder: str, port: int) -> str:

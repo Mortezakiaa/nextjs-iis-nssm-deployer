@@ -25,7 +25,7 @@ Each app gets its own internal port (3001, 3002, ...), listens only on `127.0.0.
 5. **Free disk space.** An update needs roughly twice the unpacked app size free on the drive: one copy for the new version and one for the backup.
 6. **Short downtime on update.** The site is unavailable for a few seconds while the service restarts.
 7. **Environment variables (e.g. `DATABASE_URL`) are set on the service, not by the tool.** After the first install, add them with `nssm edit <AppName>` (Environment tab), then run `nssm restart <AppName>`. The tool keeps them across updates. Do not set `PORT`, `HOSTNAME` or `NODE_ENV` there: the tool manages those and overwrites them.
-8. **Server-wide ARR change.** The tool enables the ARR proxy and sets `preserveHostHeader`, `reverseRewriteHostInResponseHeaders` and a 2-minute timeout at the **server level** (`system.webServer/proxy`). When it changes these settings, it recycles all running application pools. If other sites on the same server use ARR, check that they still work.
+8. **Server-wide ARR change.** The tool enables the ARR proxy and sets `preserveHostHeader`, `reverseRewriteHostInResponseHeaders` and a 2-minute timeout at the **server level** (`system.webServer/proxy`). When it changes these settings, it recycles all running application pools. If other sites on the same server use ARR, check that they still work. The tool also allows every server variable the app's web.config sets (`<serverVariables><set name="...">`) in the **server-level** `system.webServer/rewrite/allowedServerVariables`; without that, IIS answers every request with error 500.50. Removing an app does not remove them. The default web.config (written only when the app has none) sends `X-Forwarded-Host` and `X-Forwarded-Proto` to Node, so the app can tell when the original request was https.
 9. **HTTP only.** The tool creates an `http` binding. For HTTPS, add the certificate and an `https` binding in IIS Manager. If the site uses a port other than 80, open that port in Windows Firewall. Domains need a DNS record pointing to the server.
 10. **Service account.** Services are created with the NSSM default account (LocalSystem). They start automatically with Windows and restart 5 seconds after a crash. To use a less privileged account, change it with `nssm edit <AppName>` (Log on tab).
 11. **Unsigned executable.** `NextDeployer.exe` is built with PyInstaller and is not code-signed. Windows SmartScreen or antivirus software may warn about it. You can build it yourself from source (see [For developers](#6-for-developers)).
@@ -126,6 +126,13 @@ Fix: on every run, the tool sets `preserveHostHeader` and the other proxy settin
 %windir%\system32\inetsrv\appcmd.exe list config -section:system.webServer/proxy
 ```
 You should see `enabled="true"` and `preserveHostHeader="true"`.
+
+### Error 500.50 on every request (URL Rewrite Module Error: the server variable "X" is not allowed to be set)
+Cause: the app's web.config sets a server variable (`<serverVariables><set name="...">`) that is not allowed at the server level.
+Fix: the tool allows these on every install and update. If the tool isn't available, run this once in an Administrator Command Prompt, replacing `NAME` with the variable named in the error:
+```cmd
+%windir%\system32\inetsrv\appcmd.exe set config -section:system.webServer/rewrite/allowedServerVariables /+"[name='NAME']" /commit:apphost
+```
 
 ### Port conflicts
 To find a free port, the tool checks all of these together: every NSSM service's configuration (including stopped ones), every IIS site's web.config, IIS bindings, ports in use (`netstat`), Hyper-V/Docker reserved ranges, and its own app list. It then test-binds the port.

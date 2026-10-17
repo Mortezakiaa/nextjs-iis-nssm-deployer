@@ -5,6 +5,7 @@ import socket
 import sys
 import tempfile
 import threading
+import xml.etree.ElementTree as ET
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -12,7 +13,7 @@ tmp = tempfile.mkdtemp()
 os.environ["PROGRAMDATA"] = tmp  # keep registry/log writes out of the real C:\ProgramData
 
 import archive, config, healthcheck, iis, nssm, ports, prerequisites, registry, ui, webconfig  # noqa: E402
-from shell import DeployError, decode  # noqa: E402
+from shell import DeployError, Result, decode  # noqa: E402
 
 # decoding: nssm writes UTF-16LE without BOM, others utf-8 / OEM code page
 assert decode("SERVICE_RUNNING\r\n".encode("utf-16-le")).strip() == "SERVICE_RUNNING"
@@ -30,6 +31,32 @@ assert iis.binding_owner(80, "Shop.com", fake_sites) == "Shop"
 assert iis.binding_owner(80, "blog.com", fake_sites) == ""
 assert iis.binding_owner(443, "blog.com", fake_sites) == "Shop"
 assert iis.binding_owner(8080, "", fake_sites) == ""
+# allowed server variables, as `appcmd list config -section:system.webServer/rewrite/allowedServerVariables` prints them
+allowed_xml = "<system.webServer>\r\n  <rewrite>\r\n    <allowedServerVariables{}\r\n  </rewrite>\r\n</system.webServer>\r\n"
+assert iis.parse_allowed_server_variables("") == set()
+assert iis.parse_allowed_server_variables(allowed_xml.format(" />")) == set()
+assert iis.parse_allowed_server_variables(allowed_xml.format(
+    '>\r\n      <add name="HTTP_X_FORWARDED_HOST" />\r\n    </allowedServerVariables>')) == {"HTTP_X_FORWARDED_HOST"}
+assert iis.parse_allowed_server_variables(allowed_xml.format(
+    '>\r\n      <add name="http_x_forwarded_host" />\r\n      <add name="HTTP_X_Forwarded_Proto" />\r\n'
+    '    </allowedServerVariables>')) == {"HTTP_X_FORWARDED_HOST", "HTTP_X_FORWARDED_PROTO"}
+# allow_server_variables only adds what's missing (`/+` on an existing name fails), once per name
+calls, real_appcmd = [], iis.appcmd
+
+
+def fake_appcmd(*args, timeout=120):
+    calls.append(args)
+    if args[0] == "list":
+        return Result(0, allowed_xml.format('>\r\n      <add name="http_x_forwarded_host" />\r\n    </allowedServerVariables>'), "")
+    return Result(0, "", "")
+
+
+iis.appcmd = fake_appcmd
+assert iis.allow_server_variables(["HTTP_X_FORWARDED_HOST", "HTTP_X_FORWARDED_PROTO", "http_x_forwarded_proto"]) == [
+    "HTTP_X_FORWARDED_PROTO"]
+assert [c[0] for c in calls] == ["list", "set"] and calls[1][3] == "/+[name='HTTP_X_FORWARDED_PROTO']"
+assert iis.allow_server_variables(["HTTP_X_FORWARDED_HOST"]) == [] and [c[0] for c in calls] == ["list", "set", "list"]
+iis.appcmd = real_appcmd
 netstat = """
   Proto  Local Address          Foreign Address        State           PID
   TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1012
@@ -62,6 +89,20 @@ webconfig.write(d, 3123)
 assert webconfig.validate(os.path.join(d, "web.config"), 3123)
 assert not webconfig.validate(os.path.join(d, "web.config"), 3124)
 assert ports.webconfig_ports(d) == {3123}
+# template: valid XML that forwards the original host and scheme to Node
+ET.fromstring(webconfig.render(3123))
+assert 'value="{MapProto:{HTTPS}}"' in webconfig.render(3123)
+assert webconfig.server_variables(os.path.join(d, "web.config")) == ["HTTP_X_FORWARDED_HOST", "HTTP_X_FORWARDED_PROTO"]
+# the app's own web.config: its variables are read at any depth; unreadable -> none
+other = os.path.join(tempfile.mkdtemp(), "web.config")
+with open(other, "w", encoding="utf-8") as f:
+    f.write('<configuration><location path="api"><system.webServer><rewrite><rules><rule name="x">'
+            '<serverVariables><set name="HTTP_X_ORIGINAL_HOST" value="{HTTP_HOST}" /></serverVariables>'
+            '</rule></rules></rewrite></system.webServer></location></configuration>')
+assert webconfig.server_variables(other) == ["HTTP_X_ORIGINAL_HOST"]
+with open(other, "w", encoding="utf-8") as f:
+    f.write("<configuration>")
+assert webconfig.server_variables(other) == [] and webconfig.server_variables(other + ".missing") == []
 # existing web.config: only the port changes, the team's edits and line endings stay
 custom = webconfig.render(3123).replace("<handlers>", "<!-- team edit -->\n    <handlers>").replace("\n", "\r\n")
 with open(os.path.join(d, "web.config"), "w", encoding="utf-8", newline="") as f:

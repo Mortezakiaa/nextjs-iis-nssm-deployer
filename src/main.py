@@ -126,7 +126,9 @@ def install() -> None:
             archive.rmtree(archive.staging_dir(dest))
 
         ui.step(4, n, "ساخت فایل تنظیمات IIS (web.config)")
-        webconfig.write(dest, port)
+        path = webconfig.write(dest, port)
+        if iis.allow_server_variables(webconfig.server_variables(path)):
+            ui.ok("متغیرهای سرور مورد نیاز web.config در IIS مجاز شد (تا سایت خطای 500.50 ندهد).")
 
         ui.step(5, n, "ساخت سایت در IIS")
         undo.append(lambda: iis.delete_apppool(name))
@@ -232,7 +234,9 @@ def update() -> None:
             archive.rmtree(archive.staging_dir(deploy))
 
         ui.step(5, n, "به‌روزرسانی تنظیمات")
-        webconfig.write(deploy, port)
+        path = webconfig.write(deploy, port)
+        if iis.allow_server_variables(webconfig.server_variables(path)):
+            ui.ok("متغیرهای سرور مورد نیاز web.config در IIS مجاز شد (تا سایت خطای 500.50 ندهد).")
         nssm.configure(tools.nssm, svc, deploy, port, app["log_dir"])
 
         ui.step(6, n, "روشن کردن برنامه")

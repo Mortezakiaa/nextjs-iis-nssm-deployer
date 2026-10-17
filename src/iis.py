@@ -132,6 +132,31 @@ def ensure_proxy() -> list:
     return changed
 
 
+def parse_allowed_server_variables(text: str) -> set:
+    """`appcmd list config -section:system.webServer/rewrite/allowedServerVariables` -> upper-case names
+    (IIS compares them case-insensitively)."""
+    return {n.upper() for n in re.findall(r'<add\b[^>]*?\bname="([^"]*)"', text or "", re.I)}
+
+
+def allow_server_variables(names) -> list:
+    """Allow, server-wide, the server variables a web.config sets (else every request gets 500.50).
+    Only missing names are added: `/+` on an existing one fails. Returns the names that were added."""
+    if not names:
+        return []
+    section = "-section:system.webServer/rewrite/allowedServerVariables"
+    allowed = parse_allowed_server_variables(
+        check(appcmd("list", "config", section), "خواندن تنظیمات URL Rewrite در IIS انجام نشد.").out)
+    added = []
+    for name in names:
+        if name.upper() not in allowed:
+            # no double quotes: those are only for cmd, run() passes the argument as is
+            check(appcmd("set", "config", section, f"/+[name='{name}']", "/commit:apphost"),
+                  "مجاز کردن متغیرهای سرور در URL Rewrite انجام نشد.")
+            allowed.add(name.upper())
+            added.append(name)
+    return added
+
+
 def recycle_all_pools() -> None:
     """Gentle alternative to iisreset: overlapped recycle of every running pool so proxy changes take effect."""
     for name, p in apppools().items():
