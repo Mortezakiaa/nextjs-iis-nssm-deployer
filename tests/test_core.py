@@ -62,6 +62,23 @@ webconfig.write(d, 3123)
 assert webconfig.validate(os.path.join(d, "web.config"), 3123)
 assert not webconfig.validate(os.path.join(d, "web.config"), 3124)
 assert ports.webconfig_ports(d) == {3123}
+# existing web.config: only the port changes, the team's edits and line endings stay
+custom = webconfig.render(3123).replace("<handlers>", "<!-- team edit -->\n    <handlers>").replace("\n", "\r\n")
+with open(os.path.join(d, "web.config"), "w", encoding="utf-8", newline="") as f:
+    f.write(custom)
+webconfig.write(d, 3200)
+with open(os.path.join(d, "web.config"), encoding="utf-8", newline="") as f:
+    assert f.read() == custom.replace("127.0.0.1:3123/", "127.0.0.1:3200/")
+# existing web.config without that line: never replaced by a new one
+with open(os.path.join(d, "web.config"), "w", encoding="utf-8") as f:
+    f.write("<configuration />")
+try:
+    webconfig.write(d, 3200)
+    raise AssertionError("expected DeployError")
+except DeployError:
+    pass
+with open(os.path.join(d, "web.config"), encoding="utf-8") as f:
+    assert f.read() == "<configuration />"
 assert 'existingResponse="PassThrough"' in webconfig.render(1, 5) and 'maxAllowedContentLength="5"' in webconfig.render(1, 5)
 
 # port picking skips taken and actually-bound ports
@@ -104,8 +121,9 @@ archive.move_contents(archive.stage(info, dest), dest)  # .next and server.js al
 assert os.path.isfile(os.path.join(dest, "notes.txt"))
 archive.backup(dest, dest + "_backup")
 assert sorted(os.listdir(dest + "_backup")) == [".next", "notes.txt", "server.js"]
+open(os.path.join(dest, "web.config"), "w").close()
 archive.clear(dest)
-assert sorted(os.listdir(dest)) == sorted(["default-standalone.zip", archive.SELF_NAME])
+assert sorted(os.listdir(dest)) == sorted(["default-standalone.zip", archive.SELF_NAME, "web.config"])
 archive.restore(dest + "_backup", dest)
 assert os.path.isfile(os.path.join(dest, "server.js")) and os.path.isfile(os.path.join(dest, "default-standalone.zip"))
 for bad in ({"a/server.js": "", "b/x": ""}, {"deep/er/server.js": ""}):

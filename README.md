@@ -193,7 +193,7 @@ src/
   registry.py        atomic read/write of apps.json and rebuilding it from the server
   iis.py             appcmd wrappers: sites, app pools, proxy settings
   nssm.py            nssm wrappers: install, configure, start/stop, remove, status
-  webconfig.py       web.config generation from a full template + validation
+  webconfig.py       web.config from a full template only if missing, else only its port is updated + validation
   archive.py         zip validation and extraction, backup, file replacement (long paths)
   healthcheck.py     health check and result interpretation
   rollback.py        automatic rollback (standalone module, can be disabled)

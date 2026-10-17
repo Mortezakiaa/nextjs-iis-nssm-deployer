@@ -128,10 +128,11 @@ def remove(path: str) -> None:
 
 
 def clear(path: str) -> None:
-    """Delete everything inside path except the operator's files (see ours), keep the folder itself (IIS watches it)."""
+    """Delete everything inside path except the operator's files (see ours) and web.config (webconfig.write only
+    changes its port), keep the folder itself (IIS watches it). A web.config in the zip or backup still replaces it."""
     os.makedirs(lp(path), exist_ok=True)
     for name in os.listdir(lp(path)):
-        if not ours(name):
+        if not ours(name) and name.lower() != "web.config":
             remove(os.path.join(path, name))
 
 

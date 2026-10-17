@@ -118,7 +118,8 @@ def install() -> None:
         undo.append(lambda: archive.rmtree(archive.staging_dir(dest)))
         with ui.busy("در حال باز کردن فایل‌ها..."):
             src = archive.stage(z, dest)
-            added = os.listdir(src) + ["web.config"]  # all we put in; anything else in dest was there before
+            # all we put in; anything else in dest was there before (an existing web.config only gets its port changed)
+            added = os.listdir(src) + ([] if os.path.exists(os.path.join(dest, "web.config")) else ["web.config"])
             undo.append(lambda: archive.rmtree(dest) if created else
                         [archive.remove(os.path.join(dest, x)) for x in added])
             archive.move_contents(src, dest)
