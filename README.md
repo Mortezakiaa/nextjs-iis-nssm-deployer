@@ -20,9 +20,9 @@ Each app gets its own internal port (3001, 3002, ...), listens only on `127.0.0.
 
 1. **Prerequisites are checked, not installed.** IIS, URL Rewrite, ARR, Node.js and NSSM must already be on the server (see [Server prerequisites](#1-server-prerequisites-one-time)). If anything is missing, the tool stops before changing the server.
 2. **The tool does not build your app.** It deploys a ready-made zip of the Next.js `standalone` output (see [Preparing the Next.js build](#preparing-the-nextjs-build)). `NEXT_PUBLIC_*` variables are baked in at build time, so set them before `next build`.
-3. **Updates replace the whole app folder.** On update, everything in the app folder is deleted and replaced with the new zip's contents. Only `*.zip` files and `NextDeployer.exe` are kept. Never store uploads, user data, SQLite files or hand-edited config inside the app folder. Keep them in a separate folder, or ship them inside the zip. This also applies to files that were already in the folder when you first installed into it.
-4. **Only one backup is kept.** Before each update, the current version is copied to `<app folder>_backup`, overwriting the previous backup. You can roll back one version only.
-5. **Free disk space.** An update needs roughly twice the unpacked app size free on the drive: one copy for the new version and one for the backup.
+3. **Updates replace the whole app folder.** On update, everything in the app folder is deleted and replaced with the new zip's contents. Only `*.zip` files, `NextDeployer.exe` and a `deploy-tools` folder (server installers) are kept. Never store uploads, user data, SQLite files or hand-edited config inside the app folder. Keep them in a separate folder, or ship them inside the zip. This also applies to files that were already in the folder when you first installed into it.
+4. **The last clean versions are kept.** Before each update, the running version is copied to `<app folder>_releases\<date-time>`, but only if it deployed successfully and is not already a release. The newest 2 releases are kept (`releases_kept`), so you can roll back up to 2 versions.
+5. **Free disk space.** Each kept release is a full copy of the unpacked app. An update needs roughly twice the unpacked app size free on the drive, on top of the releases already kept.
 6. **Short downtime on update.** The site is unavailable for a few seconds while the service restarts.
 7. **Environment variables (e.g. `DATABASE_URL`) are set on the service, not by the tool.** After the first install, add them with `nssm edit <AppName>` (Environment tab), then run `nssm restart <AppName>`. The tool keeps them across updates. Do not set `PORT`, `HOSTNAME` or `NODE_ENV` there: the tool manages those and overwrites them.
 8. **Server-wide ARR change.** The tool enables the ARR proxy and sets `preserveHostHeader`, `reverseRewriteHostInResponseHeaders` and a 2-minute timeout at the **server level** (`system.webServer/proxy`). When it changes these settings, it recycles all running application pools. If other sites on the same server use ARR, check that they still work. The tool also allows every server variable the app's web.config sets (`<serverVariables><set name="...">`) in the **server-level** `system.webServer/rewrite/allowedServerVariables`; without that, IIS answers every request with error 500.50. Removing an app does not remove them. The default web.config (written only when the app has none) sends `X-Forwarded-Host` and `X-Forwarded-Proto` to Node, so the app can tell when the original request was https.
@@ -88,21 +88,37 @@ If any step fails, the tool undoes all partial changes so the server stays clean
 2. Enter the path to the new zip.
 3. Confirm.
 
-Port and folder are not asked again. The tool unpacks the new version next to the running one, backs up the current version to `<folder>_backup`, stops the service and waits until it has fully exited, replaces the files, starts the service, and runs a health check.
+Port and folder are not asked again. The tool unpacks the new version next to the running one, keeps the current version in `<folder>_releases` (when it is a clean one), stops the service and waits until it has fully exited, replaces the files, starts the service, and runs a health check.
 
-**If the new version doesn't come up, the tool automatically rolls back to the previous version** and reports the result. Just send the error message to your technical team.
+**If the new version doesn't come up, the tool automatically rolls back to the newest kept release** and reports the result. Just send the error message to your technical team.
 
-### Option 3: Remove an app
+### Option 3: Roll back to the previous version
+
+Pick the app from the list and confirm. The tool puts the newest kept release back (skipping the one that is running now, so a second rollback goes one more version back), restarts the service and runs a health check. Use it when a new version passed the health check but turned out to be broken.
+
+### Option 4: Remove an app
 
 Pick the app from the list. The tool shows exactly what will be removed and asks separately:
-- Delete the app folder and its backup?
+- Delete the app folder and its kept releases?
 - Delete the log folder?
 
 After final confirmation, it stops and removes the Windows service, removes the IIS site and app pool, and frees the port. Anything that was already removed by hand is skipped without an error.
 
-### Option 4: List installed apps
+### Option 5: List installed apps
 
 Shows each app's name, port, current status and last deployment time.
+
+### Unattended mode (CI/CD)
+
+Given arguments, the tool runs one install, update or rollback with no questions, no confirmations and no "press Enter", so a pipeline can run it over WinRM:
+
+```
+NextDeployer.exe install  --zip D:\Apps\LandingPage\app.zip --name LandingPage --dest D:\Apps\LandingPage --iis-port 80 [--host shop.example.com]
+NextDeployer.exe update   --zip D:\Apps\LandingPage\app.zip --name LandingPage
+NextDeployer.exe rollback --name LandingPage
+```
+
+Each answer goes through the same checks as in the wizard; one that fails stops the run with that message instead of asking again. The exit code is `0` only when the app was installed, updated or rolled back and passed the health check. Set `NEXTDEPLOYER_TEXT=raw` when the output is read in a browser log.
 
 ---
 
@@ -162,6 +178,7 @@ If you still get a conflict (for example, another program took the port later), 
 | `C:\ProgramData\NextDeployer\deployer.log` | The tool's full technical log: every command, parameter and result. Send this file to your technical team if something goes wrong. |
 | `C:\ProgramData\NextDeployer\logs\<AppName>\` | The app's own output and errors (`out.log`, `err.log`), rotated at 10 MB. |
 | `C:\ProgramData\NextDeployer\settings.json` | Optional settings (create it only if needed). |
+| `<app folder>_releases\<date-time>\` | The last clean versions of the app, newest first, for rollback. |
 
 Example `settings.json` (all keys are optional; the values shown are the defaults):
 
@@ -173,12 +190,14 @@ Example `settings.json` (all keys are optional; the values shown are the default
   "max_upload_mb": 100,
   "websockets": false,
   "rollback": true,
+  "releases_kept": 2,
   "health_timeout": 60,
   "health_interval": 2
 }
 ```
 
-- `rollback`: `false` turns off automatic rollback after a failed update (the backup is still made).
+- `rollback`: `false` turns off automatic rollback after a failed update (releases are still kept).
+- `releases_kept`: how many clean versions `<app folder>_releases` keeps for rollback.
 - `websockets`: `true` enables WebSocket support in web.config (requires the IIS WebSocket Protocol feature).
 - `max_upload_mb`: the maximum request/upload size IIS accepts.
 
@@ -201,9 +220,9 @@ src/
   iis.py             appcmd wrappers: sites, app pools, proxy settings
   nssm.py            nssm wrappers: install, configure, start/stop, remove, status
   webconfig.py       web.config from a full template only if missing, else only its port is updated + validation
-  archive.py         zip validation and extraction, backup, file replacement (long paths)
+  archive.py         zip validation and extraction, kept releases, file replacement (long paths)
   healthcheck.py     health check and result interpretation
-  rollback.py        automatic rollback (standalone module, can be disabled)
+  rollback.py        putting a kept release back, automatically or on request (standalone module)
   uninstall.py       full app removal
   logger.py          the tool's technical log
   config.py          constants and default settings

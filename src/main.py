@@ -1,4 +1,11 @@
-"""NextDeployer entry point: main menu and the Install / Update wizards."""
+"""NextDeployer entry point: main menu and the Install / Update / Rollback wizards.
+
+Unattended (CI) mode takes the wizard's answers as arguments and never waits for a key:
+  NextDeployer.exe install --zip PATH --name NAME --dest DIR --iis-port PORT [--host DOMAIN]
+  NextDeployer.exe update --zip PATH --name NAME
+  NextDeployer.exe rollback --name NAME
+Exit code 0 means installed/updated/rolled back and healthy."""
+import argparse
 import os
 import sys
 
@@ -20,34 +27,41 @@ from shell import DeployError
 
 STATUS_FA = {"success": "موفق", "failed": "ناموفق", "rolled_back": "برگشت به نسخه قبلی",
              "rollback_failed": "برگشت ناموفق", "installing": "نیمه‌کاره", "discovered": "پیدا شده روی سرور"}
+UNATTENDED = len(sys.argv) > 1
 
 
 # ---------------------------------------------------------------- shared questions
-def ask_until(question: str, problem, default: str = "", path: bool = False, allow_empty: bool = False) -> str:
+def ask_until(question: str, problem, default: str = "", path: bool = False, allow_empty: bool = False,
+              given: str = None) -> str:
+    """With `given` (unattended mode) the answer is checked once and a problem fails instead of asking again."""
     while True:
-        answer = (ui.ask_path if path else ui.ask)(question, default)
+        answer = given if given is not None else (ui.ask_path if path else ui.ask)(question, default)
         if not answer and allow_empty:
             return ""
         p = problem(answer) if answer else "چیزی وارد نشد. لطفاً دوباره وارد کنید."
         if not p:
             return answer
+        if given is not None:
+            raise DeployError(p)
         ui.error(p)
 
 
-def ask_zip() -> archive.ZipSummary:
+def ask_zip(given: str = "") -> archive.ZipSummary:
     while True:
-        path = ui.ask_path("مسیر فایل zip برنامه را وارد کنید:")
+        path = given or ui.ask_path("مسیر فایل zip برنامه را وارد کنید:")
         if not path:
             continue
         try:
             with ui.busy("در حال بررسی فایل zip..."):
                 z = archive.inspect(os.path.abspath(path))
         except DeployError as e:
+            if given:
+                raise
             ui.error(str(e))
             continue
         if not z.has_static:
             ui.warn("پوشه .next/static داخل این فایل نیست؛ ممکن است ظاهر سایت (رنگ‌ها، فونت‌ها، تصاویر) درست نمایش داده نشود.")
-            if not ui.confirm("با همین فایل ادامه بدهیم؟"):
+            if not given and not ui.confirm("با همین فایل ادامه بدهیم؟"):
                 continue
         ui.ok("فایل zip سالم است.")
         return z
@@ -67,23 +81,26 @@ def remove_service(nssm_path: str, name: str, port: int) -> None:
 
 
 # ---------------------------------------------------------------- install
-def install() -> None:
+def install(args=None) -> bool:
     ui.title("نصب برنامه جدید")
     tools = prerequisites.check_server()
     apps = registry.load()
-    z = ask_zip()
+    z = ask_zip(args.zip if args else "")
     name = ask_until("نام برنامه را به انگلیسی وارد کنید (مثلاً LandingPage):",
-                     lambda n: prerequisites.name_problem(n, apps))
+                     lambda n: prerequisites.name_problem(n, apps), given=args.name if args else None)
     dest = os.path.normpath(ask_until("برنامه در کدام پوشه سرور نصب شود؟ (مثلاً D:\\Apps\\MyApp)",
-                                      lambda d: prerequisites.dest_problem(os.path.normpath(d), z), path=True))
+                                      lambda d: prerequisites.dest_problem(os.path.normpath(d), z), path=True,
+                                      given=args.dest if args else None))
     host = ask_until("دامنه سایت چیست؟ (مثلاً shop.example.com)\nاگر هنوز دامنه ندارید، فقط Enter بزنید.",
-                     lambda h: prerequisites.host_problem(prerequisites.clean_host(h)), allow_empty=True)
+                     lambda h: prerequisites.host_problem(prerequisites.clean_host(h)), allow_empty=True,
+                     given=args.host if args else None)
     host = prerequisites.clean_host(host) if host else ""
 
     with ui.busy("در حال بررسی پورت‌های سرور..."):
         taken = ports.taken_ports(apps)
     iis_port = int(ask_until("سایت در IIS روی کدام پورت باز شود؟ (برای سایت با دامنه معمولاً 80)",
-                             lambda p: prerequisites.iis_port_problem(p, host, taken)))
+                             lambda p: prerequisites.iis_port_problem(p, host, taken),
+                             given=args.iis_port if args else None))
     with ui.busy("در حال پیدا کردن یک پورت آزاد برای برنامه..."):
         port = ports.pick(*config.PORT_RANGE, taken | {iis_port})
     if not port:
@@ -98,9 +115,9 @@ def install() -> None:
     ui.info(f"- آدرس سایت: http://{host}{suffix}/" if host else f"- آدرس سایت: همین سرور، پورت {iis_port}")
     if os.path.isdir(dest) and os.listdir(dest):
         ui.warn("پوشه نصب خالی نیست: فایل‌های هم‌نام با فایل‌های برنامه جایگزین می‌شوند و بقیه فایل‌ها دست نمی‌خورند.")
-    if not ui.confirm("نصب انجام شود؟"):
+    if not args and not ui.confirm("نصب انجام شود؟"):
         ui.info("نصب لغو شد. هیچ تغییری روی سرور داده نشد.")
-        return
+        return False
 
     log_dir = str(config.LOGS_ROOT / name)
     app = registry.new_entry(name, port, dest, tools.node, log_dir)
@@ -164,6 +181,7 @@ def install() -> None:
     if not h.ok:
         ui.info("برنامه نصب شد ولی سالم کار نمی‌کند. پیام‌های بالا را برای تیم فنی بفرستید؛ "
                 "بعد از رفع مشکل، نسخه درست را با گزینه «به‌روزرسانی» نصب کنید.")
+    return h.ok
 
 
 # ---------------------------------------------------------------- update
@@ -180,34 +198,38 @@ def app_problem(app: dict) -> str:
     return ""
 
 
-def update() -> None:
+def update(args=None) -> bool:
     ui.title("به‌روزرسانی برنامه")
     tools = prerequisites.check_server()
     apps = registry.load()
     if not apps:
         ui.warn("هیچ برنامه‌ای روی این سرور پیدا نشد. برای نصب، گزینه «نصب برنامه جدید» را بزنید.")
-        return
-    name = pick_app(apps, "کدام برنامه به‌روزرسانی شود؟")
+        return False
+    if args and args.name not in apps:
+        raise DeployError(f"برنامه «{args.name}» روی این سرور پیدا نشد.")
+    name = args.name if args else pick_app(apps, "کدام برنامه به‌روزرسانی شود؟")
     if not name:
-        return
+        return False
     app = apps[name]
     problem = app_problem(app)
     if problem:
         raise DeployError(problem)
     svc, deploy, port = app["nssm_service"], app["deploy_path"], app["port"]
-    app.setdefault("backup_path", deploy.rstrip("\\/") + "_backup")
+    app.setdefault("releases_path", deploy.rstrip("\\/") + "_releases")
     app["log_dir"] = app.get("log_dir") or str(config.LOGS_ROOT / name)
+    # Only a version that deployed cleanly becomes a release; one put back from the releases is already there.
+    keep_current = app.get("last_deploy_status") == "success" and not app.get("current_release")
 
-    z = ask_zip()
+    z = ask_zip(args.zip if args else "")
     if not archive.enough_space(deploy, z, with_backup=True):
         raise DeployError("فضای خالی درایو برای نسخه جدید و نسخه پشتیبان کافی نیست. کمی فضا آزاد کنید و دوباره امتحان کنید.")
     ui.info("")
     ui.info(f"برنامه «{name}» (پوشه {deploy}، پورت {port}) با فایل زیر به‌روزرسانی می‌شود:")
     ui.info(z.path)
     ui.info("در طول به‌روزرسانی، سایت برای چند ثانیه در دسترس نیست.")
-    if not ui.confirm("به‌روزرسانی انجام شود؟"):
+    if not args and not ui.confirm("به‌روزرسانی انجام شود؟"):
         ui.info("به‌روزرسانی لغو شد. هیچ تغییری روی سرور داده نشد.")
-        return
+        return False
 
     log.info("UPDATE name=%s deploy=%s port=%s zip=%s", name, deploy, port, z.path)
     n, stopped, files_touched = 7, False, False
@@ -216,9 +238,13 @@ def update() -> None:
         with ui.busy("در حال باز کردن فایل‌ها..."):
             src = archive.stage(z, deploy)
 
-        ui.step(2, n, "تهیه نسخه پشتیبان از نسخه فعلی")
-        with ui.busy("در حال کپی نسخه فعلی..."):
-            archive.backup(deploy, app["backup_path"])
+        ui.step(2, n, "نگه‌داشتن نسخه فعلی در پوشه نسخه‌ها")
+        if keep_current:
+            with ui.busy("در حال کپی نسخه فعلی..."):
+                kept = archive.save_release(deploy, app["releases_path"], config.RELEASES_KEPT)
+            ui.ok(f"نسخه فعلی با نام {kept} در {app['releases_path']} نگه داشته شد.")
+        else:
+            ui.info("نسخه فعلی سالم ثبت نشده یا از قبل در پوشه نسخه‌ها هست؛ نسخه‌های نگه‌داشته دست نمی‌خورند.")
 
         ui.step(3, n, "خاموش کردن برنامه")
         stopped = True
@@ -228,6 +254,7 @@ def update() -> None:
 
         ui.step(4, n, "جایگزینی فایل‌ها")
         files_touched = True
+        app["current_release"] = ""
         with ui.busy("در حال جایگزینی فایل‌ها..."):
             archive.clear(deploy)
             archive.move_contents(src, deploy)
@@ -258,7 +285,8 @@ def update() -> None:
                 ui.info("برنامه با همان نسخه قبلی دوباره روشن شد.")
             else:
                 ui.info("هیچ تغییری روی برنامه داده نشده بود.")
-            registry.upsert(name, last_deploy_at=registry.now(), last_deploy_status="failed")
+            registry.upsert(name, last_deploy_at=registry.now(), last_deploy_status="failed",
+                            releases_path=app["releases_path"], current_release=app.get("current_release") or "")
         except Exception:
             log.exception("recovery after failed update also failed")
             ui.error("برگرداندن برنامه به حالت قبل انجام نشد. فوراً به تیم فنی اطلاع دهید.")
@@ -282,8 +310,48 @@ def update() -> None:
             if h2:
                 healthcheck.report(h2, name, app)
             ui.error("برگشت به نسخه قبلی هم موفق نبود. فوراً به تیم فنی اطلاع دهید.")
+    registry.upsert(name, last_deploy_at=registry.now(), last_deploy_status=status, log_dir=app["log_dir"],
+                    releases_path=app["releases_path"], current_release=app["current_release"])
+    return status == "success"
+
+
+# ---------------------------------------------------------------- rollback
+def rollback_app(args=None) -> bool:
+    ui.title("برگشت به نسخه قبلی")
+    tools = prerequisites.check_server()
+    apps = registry.load()
+    if not apps:
+        ui.warn("هیچ برنامه‌ای روی این سرور پیدا نشد.")
+        return False
+    if args and args.name not in apps:
+        raise DeployError(f"برنامه «{args.name}» روی این سرور پیدا نشد.")
+    name = args.name if args else pick_app(apps, "کدام برنامه به نسخه قبلی برگردد؟")
+    if not name:
+        return False
+    app = apps[name]
+    problem = app_problem(app)
+    if problem:
+        raise DeployError(problem)
+    app.setdefault("releases_path", app["deploy_path"].rstrip("\\/") + "_releases")
+    app["log_dir"] = app.get("log_dir") or str(config.LOGS_ROOT / name)
+
+    # Each rollback steps one release further back: the one running now is skipped.
+    target = rollback.newest_release(app, skip=app.get("current_release") or "")
+    if not target:
+        raise DeployError(f"هیچ نسخه قبلی‌ای در {app['releases_path']} نگه داشته نشده است.")
+    ui.info(f"برنامه «{name}» به نسخه {os.path.basename(target)} برمی‌گردد.")
+    ui.info("در طول برگشت، سایت برای چند ثانیه در دسترس نیست.")
+    if not args and not ui.confirm("برگشت انجام شود؟"):
+        ui.info("برگشت لغو شد. هیچ تغییری روی سرور داده نشد.")
+        return False
+
+    log.info("ROLLBACK name=%s to=%s", name, target)
+    h = rollback.restore(app, tools.nssm, target)
+    healthcheck.report(h, name, app)
+    status = "rolled_back" if h.ok else "rollback_failed"
     registry.upsert(name, last_deploy_at=registry.now(), last_deploy_status=status,
-                    log_dir=app["log_dir"], backup_path=app["backup_path"])
+                    releases_path=app["releases_path"], current_release=app["current_release"])
+    return h.ok
 
 
 # ---------------------------------------------------------------- other menu items
@@ -317,10 +385,40 @@ def list_apps() -> None:
 MENU = [
     ("نصب برنامه جدید", install),
     ("به‌روزرسانی برنامه نصب‌شده", update),
+    ("برگشت به نسخه قبلی", rollback_app),
     ("حذف برنامه", remove),
     ("فهرست برنامه‌های نصب‌شده", list_apps),
     ("خروج", None),
 ]
+
+
+def parse_args(argv: list) -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="NextDeployer")
+    sub = p.add_subparsers(dest="action", required=True)
+    i = sub.add_parser("install")
+    i.add_argument("--zip", required=True)
+    i.add_argument("--name", required=True)
+    i.add_argument("--dest", required=True)
+    i.add_argument("--iis-port", required=True)
+    i.add_argument("--host", default="")
+    u = sub.add_parser("update")
+    u.add_argument("--zip", required=True)
+    u.add_argument("--name", required=True)
+    r = sub.add_parser("rollback")
+    r.add_argument("--name", required=True)
+    return p.parse_args(argv)
+
+
+def unattended(argv: list) -> int:
+    args = parse_args(argv)
+    log.info("unattended: %s", args)
+    try:
+        ok = {"install": install, "update": update, "rollback": rollback_app}[args.action](args)
+    except DeployError as e:
+        log.error("DeployError: %s", e)
+        ui.error(str(e))
+        return 1
+    return 0 if ok else 1
 
 
 def main() -> int:
@@ -330,8 +428,11 @@ def main() -> int:
     if not prerequisites.is_admin():
         ui.error("این برنامه باید با دسترسی مدیر (Administrator) اجرا شود.")
         ui.info("برنامه را ببندید و دوباره باز کنید؛ اگر ویندوز اجازه خواست، «Yes» را بزنید.")
-        ui.pause("برای بستن Enter را بزنید.")
+        if not UNATTENDED:
+            ui.pause("برای بستن Enter را بزنید.")
         return 1
+    if UNATTENDED:
+        return unattended(sys.argv[1:])
     while True:
         ui.title("NextDeployer - نصب و به‌روزرسانی برنامه‌های Next.js")
         label, action = MENU[ui.choose("چه کاری می‌خواهید انجام دهید؟", [m[0] for m in MENU])]
@@ -364,5 +465,6 @@ if __name__ == "__main__":
         log.exception("fatal")
         ui.error("یک خطای پیش‌بینی‌نشده رخ داد و برنامه بسته می‌شود.")
         ui.info(f"جزئیات فنی در این فایل ثبت شد: {config.LOG_FILE}")
-        ui.pause("برای بستن Enter را بزنید.")
+        if not UNATTENDED:
+            ui.pause("برای بستن Enter را بزنید.")
         sys.exit(1)

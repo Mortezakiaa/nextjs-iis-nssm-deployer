@@ -83,11 +83,14 @@ def move_contents(src: str, dst: str) -> None:
 SELF_NAME = os.path.basename(sys.executable).lower()
 
 
+TOOLS_DIR = "deploy-tools"
+
+
 def ours(name: str) -> bool:
-    """Operators keep the zip and NextDeployer.exe inside the app folder. Never delete, back up or restore over
-    them: the running exe is locked and would make every update fail."""
+    """Operators keep the zip, NextDeployer.exe and the server installers (deploy-tools) inside the app folder.
+    Never delete, back up or restore over them: the running exe is locked and would make every update fail."""
     n = name.lower()
-    return n.endswith(".zip") or n == SELF_NAME
+    return n.endswith(".zip") or n == SELF_NAME or n == TOOLS_DIR
 
 
 def _skip_ours(root: str):
@@ -148,6 +151,28 @@ def backup(src: str, dst: str) -> None:
 def restore(backup_dir: str, target: str) -> None:
     clear(target)
     shutil.copytree(lp(backup_dir), lp(target), symlinks=True, dirs_exist_ok=True, ignore=_skip_ours(backup_dir))
+
+
+def releases(releases_dir: str) -> list:
+    """Names of the kept releases, newest first (names are timestamps, so they sort by age)."""
+    if not releases_dir or not os.path.isdir(lp(releases_dir)):
+        return []
+    return sorted((n for n in os.listdir(lp(releases_dir))
+                   if not n.endswith(".nd-tmp") and os.path.isdir(lp(os.path.join(releases_dir, n)))), reverse=True)
+
+
+def save_release(src: str, releases_dir: str, keep: int, name: str = "") -> str:
+    """Copy src into releases_dir\\<timestamp>, then delete all but the newest `keep` releases. Returns the name."""
+    base = name or time.strftime("%Y%m%d-%H%M%S")
+    name, i = base, 1
+    while os.path.exists(lp(os.path.join(releases_dir, name))):
+        i += 1
+        name = f"{base}-{i}"
+    os.makedirs(lp(releases_dir), exist_ok=True)
+    backup(src, os.path.join(releases_dir, name))
+    for old in releases(releases_dir)[keep:]:
+        rmtree(os.path.join(releases_dir, old))
+    return name
 
 
 def existing_ancestor(path: str) -> str:

@@ -212,4 +212,36 @@ assert healthcheck.http_status(f"http://127.0.0.1:{p}/", timeout=1) is None
 # Persian shaping never crashes and keeps embedded paths readable
 assert "I:\\App" in ui.fa("پوشه نصب: I:\\App")
 
+# unattended mode: a given answer is checked once and a problem fails instead of asking again
+import main  # noqa: E402
+assert main.ask_until("q", lambda a: "", given="x") == "x"
+assert main.ask_until("q", lambda a: "bad", allow_empty=True, given="") == ""
+try:
+    main.ask_until("q", lambda a: "bad", given="x")
+    raise AssertionError("expected DeployError")
+except DeployError as e:
+    assert str(e) == "bad"
+a = main.parse_args(["install", "--zip", "a.zip", "--name", "App", "--dest", "D:\\Apps\\App", "--iis-port", "80"])
+assert (a.action, a.iis_port, a.host) == ("install", "80", "")
+assert main.parse_args(["update", "--zip", "a.zip", "--name", "App"]).action == "update"
+assert main.parse_args(["rollback", "--name", "App"]).action == "rollback"
+
+# releases: only the newest `keep` survive, the operator's files (zip, exe, deploy-tools) are never copied in,
+# and a rollback skips the release that is running now
+import rollback  # noqa: E402
+app_dir = os.path.join(tmp, "App")
+os.makedirs(os.path.join(app_dir, archive.TOOLS_DIR))
+for f in ("server.js", "app.zip"):
+    open(os.path.join(app_dir, f), "w").close()
+rel = app_dir + "_releases"
+for n in ("20260101-000001", "20260101-000002", "20260101-000003"):
+    assert archive.save_release(app_dir, rel, 2, n) == n
+assert archive.releases(rel) == ["20260101-000003", "20260101-000002"]
+assert os.listdir(os.path.join(rel, "20260101-000003")) == ["server.js"]
+assert archive.save_release(app_dir, rel, 2, "20260101-000003") == "20260101-000003-2"
+assert archive.releases(rel) == ["20260101-000003-2", "20260101-000003"]
+assert rollback.newest_release({"releases_path": rel}, skip="20260101-000003-2") == os.path.join(rel, "20260101-000003")
+assert rollback.newest_release({"releases_path": os.path.join(tmp, "missing")}) == ""
+assert archive.ours("Deploy-Tools") and archive.ours("x.zip") and not archive.ours("server.js")
+
 print("all checks passed")

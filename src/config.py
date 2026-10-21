@@ -18,6 +18,7 @@ DEFAULTS = {
     "max_upload_mb": 100,
     "websockets": False,
     "rollback": True,
+    "releases_kept": 2,         # clean versions kept in <app folder>_releases for rollback
     "health_timeout": 60,
     "health_interval": 2,
 }
@@ -38,6 +39,7 @@ LOGS_ROOT = Path(S["logs_root"])
 MAX_UPLOAD_BYTES = int(S["max_upload_mb"]) * 1024 * 1024
 WEBSOCKETS = bool(S["websockets"])
 ROLLBACK = bool(S["rollback"])
+RELEASES_KEPT = max(1, int(S["releases_kept"]))
 HEALTH_TIMEOUT = int(S["health_timeout"])
 HEALTH_INTERVAL = int(S["health_interval"])
 
