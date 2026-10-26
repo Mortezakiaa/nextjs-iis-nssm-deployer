@@ -58,13 +58,11 @@ def binding_ports() -> set:
     return {b[2] for s in sites().values() for b in parse_bindings(s.get("bindings"))}
 
 
-def http_binding(site: str):
-    """(port, host) of the site's first http binding, or None."""
+def site_binding(site: str):
+    """(protocol, ip, port, host) of the site's first http binding, else its first https one, else None."""
     s = sites().get(site)
-    for proto, _, port, host in parse_bindings(s.get("bindings") if s else ""):
-        if proto == "http":
-            return port, host
-    return None
+    bindings = [b for b in parse_bindings(s.get("bindings") if s else "") if b[0] in ("http", "https")]
+    return next((b for b in bindings if b[0] == "http"), bindings[0] if bindings else None)
 
 
 def binding_owner(port: int, host: str, all_sites: dict = None) -> str:

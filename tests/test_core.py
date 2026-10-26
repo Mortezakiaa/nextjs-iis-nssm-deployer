@@ -31,6 +31,18 @@ assert iis.binding_owner(80, "Shop.com", fake_sites) == "Shop"
 assert iis.binding_owner(80, "blog.com", fake_sites) == ""
 assert iis.binding_owner(443, "blog.com", fake_sites) == "Shop"
 assert iis.binding_owner(8080, "", fake_sites) == ""
+# health check reaches the site through IIS: http first, else https by its name (SNI); an IP-bound site on its IP
+real_sites = iis.sites
+iis.sites = lambda: {"Both": {"bindings": "https/*:443:a.com,http/*:80:a.com"},
+                     "TlsOnly": {"bindings": "https/192.168.100.120:1021:epc.7soft.biz"}, "Ftp": {"bindings": "ftp/*:21:"}}
+assert iis.site_binding("Both") == ("http", "*", 80, "a.com")
+assert iis.site_binding("TlsOnly") == ("https", "192.168.100.120", 1021, "epc.7soft.biz")
+assert iis.site_binding("Ftp") is None and iis.site_binding("Missing") is None
+iis.sites = real_sites
+assert healthcheck.iis_probe("https", "192.168.100.120", 1021, "epc.7soft.biz") == ("https://epc.7soft.biz:1021/", "")
+assert healthcheck.iis_probe("http", "192.168.100.120", 1010, "") == ("http://192.168.100.120:1010/", "")
+assert healthcheck.iis_probe("http", "*", 80, "shop.com") == ("http://127.0.0.1:80/", "shop.com")
+assert healthcheck.iis_probe("http", "*", 1212, "") == ("http://127.0.0.1:1212/", "")
 # allowed server variables, as `appcmd list config -section:system.webServer/rewrite/allowedServerVariables` prints them
 allowed_xml = "<system.webServer>\r\n  <rewrite>\r\n    <allowedServerVariables{}\r\n  </rewrite>\r\n</system.webServer>\r\n"
 assert iis.parse_allowed_server_variables("") == set()

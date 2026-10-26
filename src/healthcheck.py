@@ -1,6 +1,7 @@
 """Post-deploy health check: Node directly, then through IIS, then make sure Node is NOT reachable from outside."""
 import os
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -24,7 +25,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # a redirect is a valid answer; don't follow it to https/other hosts
 
 
-_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+# The check is whether the site answers, not whether its certificate is trusted on this server.
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect,
+                                      urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
 
 
 def http_status(url: str, host: str = "", timeout: int = 5):
@@ -45,6 +48,16 @@ def poll(url: str, host: str, seconds: int):
         if (code is not None and code < 500) or time.time() >= deadline:
             return code
         time.sleep(config.HEALTH_INTERVAL)
+
+
+def iis_probe(proto: str, ip: str, port: int, host: str) -> tuple:
+    """(url, Host header) that reaches the site through IIS. An IP-bound site answers only on that IP, and an
+    https site with a host name is chosen by SNI, so it is called by that name."""
+    suffix = "" if port == (443 if proto == "https" else 80) else f":{port}"
+    if proto == "https" and host:
+        return f"https://{host}:{port}/", ""
+    target = ip if ip and ip != "*" else "127.0.0.1"
+    return f"{proto}://{target}:{port}/", f"{host}{suffix}" if host else ""
 
 
 def local_ips() -> list:
@@ -84,14 +97,14 @@ def check(app: dict, nssm_path: str) -> Health:
     port, site = app["port"], app.get("iis_site")
     with ui.busy("در حال بررسی سلامت برنامه (حداکثر حدود یک دقیقه)..."):
         h.node_code = poll(f"http://127.0.0.1:{port}/", "", config.HEALTH_TIMEOUT)
-        b = iis.http_binding(site) if site else None
+        b = iis.site_binding(site) if site else None
         if b:
-            bport, host = b
-            suffix = "" if bport == 80 else f":{bport}"
-            h.binding = f"http://{host or '*'}{suffix}"
-            h.url = f"http://{host or (local_ips() or ['localhost'])[0]}{suffix}/"
+            proto, ip, bport, host = b
+            suffix = "" if bport == (443 if proto == "https" else 80) else f":{bport}"
+            h.binding = f"{proto}://{host or '*'}{suffix}"
+            h.url = f"{proto}://{host or (local_ips() or ['localhost'])[0]}{suffix}/"
             if h.node_ok:
-                h.iis_code = poll(f"http://127.0.0.1:{bport}/", f"{host}{suffix}" if host else "", 20)
+                h.iis_code = poll(*iis_probe(proto, ip, bport, host), 20)
             if host:
                 try:
                     socket.gethostbyname(host)
@@ -137,7 +150,7 @@ def report(h: Health, name: str, app: dict) -> None:
         ui.error("اپلیکیشن سالم بالا آمده، مشکل از تنظیمات IIS/ARR است.")
         ui.info("این موارد را بررسی کنید (یا به تیم فنی اطلاع دهید):")
         if not h.binding:
-            ui.info("- سایت در IIS هیچ آدرس http ندارد (Binding).")
+            ui.info("- سایت در IIS هیچ آدرس http یا https ندارد (Binding).")
         else:
             ui.info(f"- آدرس (Binding) سایت در IIS: {h.binding}")
         ui.info("- پراکسی ARR در IIS فعال باشد. اگر همین الان فعال شده، یک بار IIS را ری‌استارت کنید (iisreset).")
