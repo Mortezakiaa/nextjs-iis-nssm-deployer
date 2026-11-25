@@ -7,6 +7,7 @@ import tempfile
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
+from unittest.mock import DEFAULT, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 tmp = tempfile.mkdtemp()
@@ -161,7 +162,13 @@ dest = os.path.join(tmp, "deep", "App")
 archive.move_contents(archive.stage(info, dest), dest)
 archive.rmtree(archive.staging_dir(dest))
 assert os.path.isfile(os.path.join(dest, "server.js")) and not os.path.exists(archive.staging_dir(dest))
-archive.backup(dest, dest + "_backup")
+# The release rename retries a temporary Windows access-denied error.
+with patch.object(archive.time, "sleep") as delay, patch.object(
+    archive.os, "replace", wraps=os.replace,
+    side_effect=[PermissionError(13, "Access is denied", None, 5), DEFAULT],
+):
+    archive.backup(dest, dest + "_backup")
+delay.assert_called_once_with(2)
 archive.clear(dest)
 assert os.listdir(dest) == []
 archive.restore(dest + "_backup", dest)

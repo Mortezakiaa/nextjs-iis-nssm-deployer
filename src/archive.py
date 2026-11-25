@@ -77,7 +77,7 @@ def move_contents(src: str, dst: str) -> None:
     os.makedirs(lp(dst), exist_ok=True)
     for name in os.listdir(lp(src)):
         remove(os.path.join(dst, name))
-        os.replace(lp(os.path.join(src, name)), lp(os.path.join(dst, name)))
+        _replace(os.path.join(src, name), os.path.join(dst, name))
 
 
 SELF_NAME = os.path.basename(sys.executable).lower()
@@ -109,6 +109,12 @@ def retry(fn, seconds: int = 30):
             if time.time() > deadline:
                 raise
             time.sleep(2)
+
+
+def _replace(src: str, dst: str) -> None:
+    # A recently copied or extracted tree can still have open handles on Windows.
+    source, target = lp(src), lp(dst)
+    retry(lambda: os.replace(source, target))
 
 
 def _make_writable(func, path, _exc):
@@ -145,7 +151,7 @@ def backup(src: str, dst: str) -> None:
     rmtree(tmp)
     shutil.copytree(lp(src), lp(tmp), symlinks=True, ignore=_skip_ours(src))
     rmtree(dst)
-    os.replace(lp(tmp), lp(dst))
+    _replace(tmp, dst)
 
 
 def restore(backup_dir: str, target: str) -> None:
